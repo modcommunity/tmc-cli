@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.claude
+
+# Never commit a credential: profiles and Ed25519 private keys.
+*.pem
+config.json

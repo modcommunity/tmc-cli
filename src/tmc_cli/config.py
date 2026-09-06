@@ -1,0 +1,330 @@
+"""Profiles: where a credential and a base URL live between invocations.
+
+A key is a secret, so the goal is that it is typed once and never again — not
+pasted into a shell history on every call. Profiles are stored in
+`~/.config/tmc/config.json` with `0600`, and a JWT private key is written beside
+it as its own `0600` PEM rather than inlined, so it can be a file the user
+already has (`--private-key ~/keys/tmc.pem` is stored as a path, not a copy).
+
+RESOLUTION ORDER
+----------------
+Explicit flags beat environment variables beat the stored profile. The
+environment tier exists for CI, where writing a config file is an extra step and
+the secret arrives as `TMC_TOKEN` anyway.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+from dataclasses import dataclass, field
+from typing import Any
+
+from .auth import AnonymousCredential, BearerCredential, Credential, JwtCredential
+from .ed25519 import KeyError_, SigningKey
+from .errors import ConfigError
+
+DEFAULT_BASE_URL = "https://moddingcommunity.com"
+
+ENV_PREFIX = "TMC_"
+
+
+def config_dir() -> str:
+    base = os.environ.get("TMC_CONFIG_DIR")
+
+    if base:
+        return os.path.expanduser(base)
+
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
+
+    return os.path.join(xdg, "tmc")
+
+
+def config_path() -> str:
+    return os.path.join(config_dir(), "config.json")
+
+
+@dataclass
+class Profile:
+    """One stored credential plus the site it belongs to."""
+
+    name: str
+    base_url: str = DEFAULT_BASE_URL
+    auth_mode: str = "bearer"  # bearer | jwt
+    token: str | None = None
+    key_id: str | None = None
+    private_key_path: str | None = None
+    jwt_lifetime_sec: int = 60
+    #: Optional per-profile defaults, e.g. {"timeout": 60}.
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def to_json(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "base_url": self.base_url,
+            "auth_mode": self.auth_mode,
+        }
+
+        if self.token:
+            out["token"] = self.token
+
+        if self.key_id:
+            out["key_id"] = self.key_id
+
+        if self.private_key_path:
+            out["private_key_path"] = self.private_key_path
+
+        if self.jwt_lifetime_sec != 60:
+            out["jwt_lifetime_sec"] = self.jwt_lifetime_sec
+
+        if self.options:
+            out["options"] = self.options
+
+        return out
+
+    @classmethod
+    def from_json(cls, name: str, raw: dict[str, Any]) -> "Profile":
+        return cls(
+            name=name,
+            base_url=str(raw.get("base_url") or DEFAULT_BASE_URL),
+            auth_mode=str(raw.get("auth_mode") or "bearer"),
+            token=raw.get("token"),
+            key_id=raw.get("key_id"),
+            private_key_path=raw.get("private_key_path"),
+            jwt_lifetime_sec=int(raw.get("jwt_lifetime_sec") or 60),
+            options=dict(raw.get("options") or {}),
+        )
+
+    def credential(self) -> Credential:
+        if self.auth_mode == "jwt":
+            if not self.key_id:
+                raise ConfigError(
+                    f"Profile '{self.name}' is JWT mode but has no key id.",
+                    hint="Re-run: tmc auth login --jwt --key-id tmcak_… --private-key key.pem",
+                )
+
+            if not self.private_key_path:
+                raise ConfigError(
+                    f"Profile '{self.name}' is JWT mode but has no private key.",
+                    hint="Re-run: tmc auth login --jwt --key-id tmcak_… --private-key key.pem",
+                )
+
+            try:
+                signing_key = SigningKey.from_file(self.private_key_path)
+            except KeyError_ as err:
+                raise ConfigError(str(err)) from err
+
+            return JwtCredential(self.key_id, signing_key, self.jwt_lifetime_sec)
+
+        if not self.token:
+            raise ConfigError(
+                f"Profile '{self.name}' has no token.",
+                hint="Run: tmc auth login --token tmc_…",
+            )
+
+        return BearerCredential(self.token)
+
+    def describe(self) -> str:
+        if self.auth_mode == "jwt":
+            return f"jwt {self.key_id or '(no key id)'} → {self.private_key_path or '(no key file)'}"
+
+        from .auth import redact
+
+        return f"bearer {redact(self.token)}" if self.token else "bearer (no token)"
+
+
+@dataclass
+class Config:
+    default_profile: str = "default"
+    profiles: dict[str, Profile] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls) -> "Config":
+        path = config_path()
+
+        if not os.path.exists(path):
+            return cls()
+
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except (OSError, json.JSONDecodeError) as err:
+            raise ConfigError(f"Cannot read {path}: {err}") from err
+
+        profiles = {
+            name: Profile.from_json(name, body)
+            for name, body in (raw.get("profiles") or {}).items()
+            if isinstance(body, dict)
+        }
+
+        return cls(
+            default_profile=str(raw.get("default_profile") or "default"),
+            profiles=profiles,
+        )
+
+    def save(self) -> str:
+        path = config_path()
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+
+        body = {
+            "default_profile": self.default_profile,
+            "profiles": {
+                name: profile.to_json() for name, profile in self.profiles.items()
+            },
+        }
+
+        # Write through a temp file in the same directory so an interrupted save
+        # cannot leave a half-written config — and chmod BEFORE the rename, so
+        # the secret is never briefly world-readable under its final name.
+        tmp = f"{path}.tmp"
+
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(body, handle, indent=2)
+            handle.write("\n")
+
+        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
+        os.replace(tmp, path)
+
+        return path
+
+    def get(self, name: str | None) -> Profile | None:
+        return self.profiles.get(name or self.default_profile)
+
+
+@dataclass
+class Settings:
+    """The resolved answer to "which site, which credential, how patient"."""
+
+    base_url: str
+    credential: Credential
+    profile_name: str
+    timeout: float = 60.0
+    retries: int = 3
+    retry_wait_max: float = 120.0
+    verify_tls: bool = True
+    debug: bool = False
+    dry_run: bool = False
+
+
+def _env(name: str) -> str | None:
+    value = os.environ.get(ENV_PREFIX + name)
+
+    return value if value else None
+
+
+def resolve(args: Any) -> Settings:
+    """Fold flags, environment and the stored profile into one Settings.
+
+    Flags win over the environment, which wins over the profile. A missing
+    credential is an error here rather than a 401 later — the difference matters
+    because a 401 reads as "your key is wrong" when in fact none was found.
+    """
+
+    config = Config.load()
+
+    profile_name = (
+        getattr(args, "profile", None) or _env("PROFILE") or config.default_profile
+    )
+    profile = config.profiles.get(profile_name)
+
+    base_url = (
+        getattr(args, "base_url", None)
+        or _env("BASE_URL")
+        or (profile.base_url if profile else None)
+        or DEFAULT_BASE_URL
+    )
+
+    credential = _resolve_credential(args, profile, profile_name)
+
+    options = dict(profile.options) if profile else {}
+
+    def opt(name: str, default: Any) -> Any:
+        flag = getattr(args, name, None)
+
+        if flag is not None:
+            return flag
+
+        env = _env(name.upper())
+
+        if env is not None:
+            return type(default)(env)
+
+        return options.get(name, default)
+
+    return Settings(
+        base_url=base_url.rstrip("/"),
+        credential=credential,
+        profile_name=profile_name,
+        timeout=float(opt("timeout", 60.0)),
+        retries=int(opt("retries", 3)),
+        retry_wait_max=float(opt("retry_wait_max", 120.0)),
+        verify_tls=not getattr(args, "insecure", False),
+        debug=bool(getattr(args, "debug", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+
+
+def _resolve_credential(
+    args: Any, profile: Profile | None, profile_name: str
+) -> Credential:
+    # `--anon` is a positive choice, so it beats everything — including a
+    # perfectly good stored key. Sending the key would be a DIFFERENT request:
+    # the keyed surface returns the whole record, the anonymous one a summary,
+    # and a flag that silently upgraded you would make "what does the public
+    # see?" unanswerable.
+    if getattr(args, "anon", False):
+        return AnonymousCredential()
+
+    token = getattr(args, "token", None) or _env("TOKEN")
+    key_id = getattr(args, "key_id", None) or _env("KEY_ID")
+
+    private_key_path = getattr(args, "private_key", None) or _env("PRIVATE_KEY_FILE")
+    private_key_pem = _env("PRIVATE_KEY")
+
+    lifetime = int(
+        getattr(args, "jwt_lifetime", None)
+        or _env("JWT_LIFETIME")
+        or (profile.jwt_lifetime_sec if profile else 60)
+    )
+
+    # An explicitly supplied key id means JWT mode, whatever the profile says.
+    if key_id or private_key_path or private_key_pem:
+        if not key_id:
+            raise ConfigError(
+                "A private key was given without a key id.",
+                hint="Pass --key-id tmcak_… (it is shown on the key in Account → API Keys).",
+            )
+
+        try:
+            if private_key_path:
+                signing_key = SigningKey.from_file(private_key_path)
+            elif private_key_pem:
+                signing_key = SigningKey.from_pem(private_key_pem)
+            elif profile and profile.private_key_path:
+                signing_key = SigningKey.from_file(profile.private_key_path)
+            else:
+                raise ConfigError(
+                    "A key id was given without a private key.",
+                    hint="Pass --private-key /path/to/key.pem or set TMC_PRIVATE_KEY.",
+                )
+        except KeyError_ as err:
+            raise ConfigError(str(err)) from err
+
+        return JwtCredential(key_id, signing_key, lifetime)
+
+    if token:
+        return BearerCredential(token)
+
+    if profile:
+        return profile.credential()
+
+    raise ConfigError(
+        f"No credentials found (profile '{profile_name}' does not exist).",
+        hint=(
+            "Run 'tmc auth login --token tmc_…' for a bearer key, or "
+            "'tmc auth login --jwt --key-id tmcak_… --private-key key.pem' for a JWT key. "
+            "TMC_TOKEN also works."
+        ),
+    )
