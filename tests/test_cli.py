@@ -12,8 +12,11 @@ import io
 import json
 import os
 import sys
+import shutil
+import stat
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -1062,3 +1065,161 @@ def _pkcs8_pem(seed: bytes) -> str:
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class SecretFileModeTests(unittest.TestCase):
+    """Files holding a credential must be 0600 from the moment they exist.
+
+    Asserting the mode of the *finished* file is not enough: the bug these cover
+    was a file created at the umask default and chmodded afterwards, which is
+    correct at rest and world-readable while it is being written.
+    """
+
+    def setUp(self) -> None:
+        self._dir = tempfile.mkdtemp()
+        self._old = os.environ.get("TMC_CONFIG_DIR")
+        os.environ["TMC_CONFIG_DIR"] = self._dir
+        # A permissive umask, so a mode that came from the umask is visibly wrong.
+        self._old_umask = os.umask(0o022)
+
+    def tearDown(self) -> None:
+        os.umask(self._old_umask)
+
+        if self._old is None:
+            os.environ.pop("TMC_CONFIG_DIR", None)
+        else:
+            os.environ["TMC_CONFIG_DIR"] = self._old
+
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def test_open_private_creates_at_0600(self) -> None:
+        from tmc_cli.config import open_private
+
+        path = os.path.join(self._dir, "secret")
+
+        with open_private(path) as handle:
+            # Checked while the handle is still open — the point is that the
+            # window between create and close is never readable by others.
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            handle.write("tmc_deadbeef")
+
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
+    def test_open_private_narrows_a_pre_existing_file(self) -> None:
+        """A stale temp file from an interrupted save keeps its old mode."""
+
+        from tmc_cli.config import open_private
+
+        path = os.path.join(self._dir, "stale")
+        open(path, "w").close()
+        os.chmod(path, 0o644)
+
+        with open_private(path) as handle:
+            handle.write("tmc_deadbeef")
+
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
+    def test_config_save_never_exposes_the_temp_file(self) -> None:
+        from tmc_cli.config import Config, Profile, config_path
+
+        config = Config()
+        config.profiles["default"] = Profile(name="default", token="tmc_secret")
+
+        tmp_seen: list[int] = []
+        real_replace = os.replace
+
+        def spy(src, dst):
+            # The temp file is still the only copy of the token at this point.
+            tmp_seen.append(stat.S_IMODE(os.stat(src).st_mode))
+            return real_replace(src, dst)
+
+        with mock.patch("tmc_cli.config.os.replace", spy):
+            path = config.save()
+
+        self.assertEqual(tmp_seen, [0o600])
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        self.assertEqual(path, config_path())
+
+    def test_config_save_leaves_no_temp_file_behind_on_failure(self) -> None:
+        from tmc_cli.config import Config, Profile, config_path
+
+        config = Config()
+        config.profiles["default"] = Profile(name="default", token="tmc_secret")
+
+        with mock.patch("tmc_cli.config.os.replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                config.save()
+
+        self.assertFalse(os.path.exists(f"{config_path()}.tmp"))
+
+    def test_copy_key_writes_the_pem_at_0600(self) -> None:
+        import base64
+        import textwrap
+
+        from tmc_cli.config import config_path
+        from tmc_cli.ed25519 import generate_seed
+
+        # PKCS#8 Ed25519: a fixed 16-byte header, then the 32-byte seed.
+        der = bytes.fromhex("302e020100300506032b657004220420") + generate_seed()
+        body = "\n".join(textwrap.wrap(base64.b64encode(der).decode(), 64))
+        source = os.path.join(self._dir, "source.pem")
+
+        with open(source, "w", encoding="utf-8") as handle:
+            handle.write(
+                f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n"
+            )
+
+        rc = cli.main(
+            [
+                "auth",
+                "login",
+                "--profile",
+                "copied",
+                "--jwt",
+                "--key-id",
+                "tmcak_test",
+                "--private-key",
+                source,
+                "--copy-key",
+                "--no-verify",
+            ]
+        )
+
+        self.assertEqual(rc, 0)
+
+        destination = os.path.join(os.path.dirname(config_path()), "copied.pem")
+        self.assertTrue(os.path.exists(destination))
+        self.assertEqual(stat.S_IMODE(os.stat(destination).st_mode), 0o600)
+
+
+class RedactAuthorizationTests(unittest.TestCase):
+    """`--debug` goes to stderr, and stderr is what CI archives."""
+
+    def test_no_bearer_secret_survives_redaction(self) -> None:
+        from tmc_cli.http import _redact_authorization
+
+        token = "tmc_" + "a1b2c3d4" * 4
+        line = _redact_authorization(f"Bearer {token}")
+
+        self.assertIn("Bearer", line)
+        self.assertIn("tmc_", line)
+        # The old `[:24]` slice printed thirteen characters of the hex.
+        self.assertNotIn(token[4:], line)
+        self.assertNotIn(token[4:8], line)
+        self.assertIn(str(len(token)), line)
+
+    def test_a_jwt_assertion_is_redacted_too(self) -> None:
+        from tmc_cli.http import _redact_authorization
+
+        line = _redact_authorization("Bearer eyJhbGciOiJFZERTQSJ9.body.signature")
+
+        self.assertTrue(line.startswith("Bearer eyJh"))
+        self.assertNotIn("signature", line)
+
+    def test_a_header_with_no_scheme_is_redacted_whole(self) -> None:
+        from tmc_cli.http import _redact_authorization
+
+        line = _redact_authorization("tmc_barenakedsecret")
+
+        self.assertNotIn("tmc_", line)
+        self.assertNotIn("barenakedsecret", line)

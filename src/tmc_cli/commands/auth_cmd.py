@@ -21,7 +21,7 @@ import sys
 
 from .. import output
 from ..auth import BearerCredential, JwtCredential, looks_like_bearer, redact
-from ..config import Config, DEFAULT_BASE_URL, Profile, config_path
+from ..config import Config, DEFAULT_BASE_URL, Profile, config_path, open_private
 from ..context import Context
 from ..ed25519 import KeyError_, SigningKey, generate_seed
 from ..errors import ApiError, CliError, ConfigError, UsageError
@@ -128,8 +128,11 @@ def _login_jwt(args, name: str, base_url: str) -> Profile:
         destination = os.path.join(os.path.dirname(config_path()), f"{name}.pem")
         os.makedirs(os.path.dirname(destination), mode=0o700, exist_ok=True)
 
-        shutil.copyfile(path, destination)
-        os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
+        # Not shutil.copyfile: that creates the destination at the umask default,
+        # and this file is an Ed25519 private key. It must be 0600 before any of
+        # it is on disk, not after all of it is.
+        with open(path, "rb") as source, open_private(destination, "wb") as sink:
+            shutil.copyfileobj(source, sink)
 
         path = destination
 

@@ -43,6 +43,33 @@ def config_dir() -> str:
     return os.path.join(xdg, "tmc")
 
 
+def open_private(path: str, mode: str = "w"):
+    """Create a file only its owner can read, from the moment it exists.
+
+    `open(path, "w")` creates at `0666 & ~umask` — `0644` under the usual umask —
+    so a chmod afterwards closes the window only after the secret is already on
+    disk under a readable mode. On a shared box that window is a real read. Every
+    file this tool writes that holds a credential goes through here instead.
+
+    `O_CREAT`'s mode argument does nothing when the file already exists (a stale
+    `.tmp` from an interrupted save), so the fd is chmodded as well.
+    """
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)
+
+    try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+
+        if "b" in mode:
+            return os.fdopen(fd, mode)
+
+        return os.fdopen(fd, mode, encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def config_path() -> str:
     return os.path.join(config_dir(), "config.json")
 
@@ -176,16 +203,26 @@ class Config:
         }
 
         # Write through a temp file in the same directory so an interrupted save
-        # cannot leave a half-written config — and chmod BEFORE the rename, so
-        # the secret is never briefly world-readable under its final name.
+        # cannot leave a half-written config. The temp file is created 0600 by
+        # `open_private` rather than chmodded after the fact: it holds the same
+        # token the final file does, so "never world-readable under its final
+        # name" was only half the guarantee worth making.
         tmp = f"{path}.tmp"
 
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(body, handle, indent=2)
-            handle.write("\n")
+        try:
+            with open_private(tmp) as handle:
+                json.dump(body, handle, indent=2)
+                handle.write("\n")
 
-        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
-        os.replace(tmp, path)
+            os.replace(tmp, path)
+        except BaseException:
+            # A half-written temp file still holds a credential; do not leave it.
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+            raise
 
         return path
 

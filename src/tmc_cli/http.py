@@ -479,7 +479,7 @@ class Transport:
         safe = dict(headers)
 
         if "Authorization" in safe:
-            safe["Authorization"] = safe["Authorization"][:24] + "…"
+            safe["Authorization"] = _redact_authorization(safe["Authorization"])
         else:
             safe["Authorization"] = "(none — anonymous read)"
 
@@ -493,6 +493,29 @@ class Transport:
 
     def _warn(self, message: str) -> None:
         print(f"[tmc] {message}", file=sys.stderr)
+
+
+def _redact_authorization(value: str) -> str:
+    """Enough to tell two credentials apart, never enough to present one.
+
+    This was `value[:24]`, which is `Bearer ` (7 characters) plus seventeen of
+    the credential — for a `tmc_` bearer secret, thirteen characters of the hex
+    itself. `--debug` writes to stderr, and stderr is what a CI job archives, so
+    that is a secret prefix in a log file.
+
+    What a reader of the log actually needs is which scheme and which kind of
+    credential: `tmc_` says bearer secret, `eyJ` says a signed assertion. Four
+    characters carry both, and the length distinguishes a truncated paste from a
+    whole one.
+    """
+
+    scheme, sep, rest = value.partition(" ")
+
+    if not sep or not rest:
+        # No scheme to keep separate — treat the whole header as the secret.
+        return f"(redacted, {len(value)} chars)"
+
+    return f"{scheme} {rest[:4]}… (redacted, {len(rest)} chars)"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
