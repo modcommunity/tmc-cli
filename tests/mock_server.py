@@ -67,6 +67,9 @@ ANON_TYPES = {"asset", "mod", "server", "community", "article", "collection", "g
 #: Types whose anonymous listing understands `?appId=` (`HAS_APP`).
 ANON_APP_TYPES = {"asset", "mod", "server", "article"}
 
+#: Types whose anonymous listing understands `?official=` (`HAS_OFFICIAL`).
+ANON_OFFICIAL_TYPES = {"asset", "mod", "server", "article"}
+
 ANON_LIST_LIMIT = 20
 
 ANON_LIST_NOTE = (
@@ -407,9 +410,19 @@ class Handler(BaseHTTPRequestHandler):
             and row.get("apiPublic") is not False
         ]
 
-        # `appId` is the only filter, and only on the types whose model has it.
+        # `appId` is one of the two filters, and only on the types whose model
+        # has it.
         if query.get("appId") and type_name in ANON_APP_TYPES:
             rows = [r for r in rows if r.get("appId") == int(query["appId"])]
+
+        # `official` is the other. The server reads anything but `0`/`false`/`no`
+        # as true, so the mock has to as well — a client that sent Python's
+        # `False` would otherwise be filtering for the opposite of what it asked.
+        raw_official = query.get("official")
+
+        if raw_official is not None and type_name in ANON_OFFICIAL_TYPES:
+            want = raw_official.strip().lower() not in ("0", "false", "no")
+            rows = [r for r in rows if bool(r.get("isOfficial")) is want]
 
         page = max(1, int(query.get("page") or 1))
         limit = min(ANON_LIST_LIMIT, max(1, int(query.get("limit") or ANON_LIST_LIMIT)))
@@ -771,6 +784,10 @@ def _anon_summary(type_name: str, row: dict[str, Any]) -> dict[str, Any]:
         "description": row.get("description"),
         "createdAt": row.get("createdAt"),
         "updatedAt": row.get("updatedAt"),
+        # Present only when the model carries the column, as the real summary
+        # does — `official` is absent, not false, on a type that has no such
+        # flag.
+        **({"official": bool(row["isOfficial"])} if "isOfficial" in row else {}),
     }
 
 

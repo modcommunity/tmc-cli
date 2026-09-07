@@ -953,6 +953,40 @@ class TestAnonymous(CliTestCase):
         # `appId` is the one filter it DOES serve, so it still applied.
         self.assertEqual([r["name"] for r in rows], ["Alpha"])
 
+    def test_official_filter_narrows_the_listing(self) -> None:
+        """The second anonymous filter. For articles this one IS the blog."""
+
+        self.seed_mod(name="Site Post", isOfficial=True)
+        self.seed_mod(name="Member Post", isOfficial=False)
+
+        out, _err = self.run_anon("mod", "list", "--official", "-o", "json")
+        self.assertEqual([r["name"] for r in json.loads(out)], ["Site Post"])
+
+        # `--no-official` is the other half: everything a member published.
+        out, _err = self.run_anon("mod", "list", "--no-official", "-o", "json")
+        self.assertEqual([r["name"] for r in json.loads(out)], ["Member Post"])
+
+    def test_official_is_ignored_on_the_keyed_list(self) -> None:
+        """It is an anonymous-only filter, and the keyed list drops it loudly.
+
+        Silence would be the same trap as a dropped `--search`: the keyed
+        handler ignores an unknown query param, so an unfiltered page would
+        read as a filter that matched everything.
+        """
+
+        self.seed_mod(name="Site Post", isOfficial=True)
+        self.seed_mod(name="Member Post", isOfficial=False)
+
+        err = self.run_cli_err("mod", "list", "--official", "-o", "json", expect=0)
+
+        self.assertIn("no official filter", err)
+
+        # Dropped locally rather than sent and ignored, so the query the server
+        # saw carries no trace of it.
+        sent = [path for method, path in STATE.requests if method == "GET"]
+        self.assertTrue(sent)
+        self.assertNotIn("official", " ".join(sent))
+
     def test_list_reports_the_servers_note(self) -> None:
         self.seed_mod(name="Alpha")
 

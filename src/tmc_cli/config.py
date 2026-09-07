@@ -25,7 +25,21 @@ from .auth import AnonymousCredential, BearerCredential, Credential, JwtCredenti
 from .ed25519 import KeyError_, SigningKey
 from .errors import ConfigError
 
-DEFAULT_BASE_URL = "https://moddingcommunity.com"
+#: The public APIs moved off the website onto an origin of their own. The apex
+#: still answers — nginx PROXIES `/api/content` there rather than redirecting,
+#: precisely because a cross-origin redirect strips `Authorization` and would
+#: have 401'd every keyed caller — so an existing profile keeps working and
+#: nothing has to be migrated. New profiles get the address integrations are
+#: told to use.
+#:
+#: The PATHS keep their `/api` prefix (`/api/content/...`), which is a separate
+#: decision from this one. `api.moddingcommunity.com/content/...` is the spelling
+#: the docs print, but it exists only because nginx rewrites the prefix back on;
+#: `/api/content` is the route's real name in the app and is the one spelling
+#: that answers everywhere — on the API origin, on the apex, and against a
+#: container or a dev checkout reached directly, where there is no nginx to do
+#: the rewriting. A CLI is pointed at all three.
+DEFAULT_BASE_URL = "https://api.moddingcommunity.com"
 
 ENV_PREFIX = "TMC_"
 

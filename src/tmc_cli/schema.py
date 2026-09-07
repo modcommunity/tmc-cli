@@ -111,6 +111,20 @@ IMAGES = [
     f("cardId", STR, "FileUpload id — you must own the file"),
 ]
 
+# Two switches every canonical type carries EXCEPT server — `serverFields` is an
+# explicit `ServerInput.pick()` rather than an omit-list (so the scanner's
+# telemetry can never leak onto the write surface by being added upstream), and
+# it does not pick either of these even though `ServerInput` defines them.
+VISIBILITY = [
+    f(
+        "delist",
+        BOOL,
+        "drop from listings, carousels, search and the sitemap; the page, its "
+        "address and everything attached to it stay",
+    ),
+    f("usesAi", BOOL, "self-declared AI disclosure — gates and filters nothing"),
+]
+
 # Moderator-only overrides. Present on the wire (the schemas carry them) but
 # resolved server-side against the caller's role, so an ordinary key setting one
 # is refused rather than obeyed.
@@ -187,6 +201,7 @@ TYPES: dict[str, TypeSpec] = {
             + IMAGES
             + ENGAGEMENT
             + OWNERSHIP
+            + VISIBILITY
         ),
         relations=("tags", "media", "releases", "sources"),
         list_filters=("search", "tags", "categoryIds", "communityId", "nsfw"),
@@ -227,6 +242,7 @@ TYPES: dict[str, TypeSpec] = {
             + IMAGES
             + ENGAGEMENT
             + OWNERSHIP
+            + VISIBILITY
         ),
         relations=("tags", "media", "releases", "links", "sources"),
         list_filters=("search", "tags", "categoryIds", "communityId", "nsfw"),
@@ -326,6 +342,7 @@ TYPES: dict[str, TypeSpec] = {
             + IMAGES
             + ENGAGEMENT
             + OWNERSHIP
+            + VISIBILITY
         ),
         relations=("tags", "media", "links"),
         list_filters=("search", "tags", "categoryIds", "nsfw"),
@@ -359,6 +376,7 @@ TYPES: dict[str, TypeSpec] = {
             + IMAGES
             + ENGAGEMENT
             + OWNERSHIP
+            + VISIBILITY
         ),
         relations=("tags", "media"),
         list_filters=("search", "tags", "categoryIds", "communityId", "nsfw"),
@@ -388,6 +406,7 @@ TYPES: dict[str, TypeSpec] = {
                 f("createdAt", DATE, staff_only=True),
             ]
             + IMAGES
+            + VISIBILITY
         ),
         relations=("tags", "items"),
         list_filters=("search", "tags", "nsfw"),
@@ -424,6 +443,7 @@ TYPES: dict[str, TypeSpec] = {
             + IMAGES
             + ENGAGEMENT
             + OWNERSHIP
+            + VISIBILITY
         ),
         # `tags` is the only one: relations.ts lists group under that relation
         # and no other. The sub-resource 404s the rest and says which it has.
@@ -628,14 +648,19 @@ ANON_TYPES = (
     "group",
 )
 
-#: The only list filter it accepts, and only for the types whose model has the
+#: The two list filters it accepts, each only for the types whose model has the
 #: column. Everything else — search, tags, categories, mine — is deliberately
 #: absent: the surface exists so an integrator can see the shape of the API, not
 #: so it can be used as a search engine.
-ANON_LIST_FILTERS = ("appId",)
+ANON_LIST_FILTERS = ("appId", "official")
 
 #: Types whose anonymous listing understands `?appId=` (`HAS_APP`).
 ANON_APP_FILTER_TYPES = ("asset", "mod", "server", "article")
+
+#: Types whose anonymous listing understands `?official=` (`HAS_OFFICIAL`).
+#: Same four types, but a separate table because they are separate sets
+#: server-side and only one of them is about apps.
+ANON_OFFICIAL_FILTER_TYPES = ("asset", "mod", "server", "article")
 
 #: `api.anon.limitMax`, the ceiling AND the default page size for an anonymous
 #: list. An operator can change it, so this is only used to warn.

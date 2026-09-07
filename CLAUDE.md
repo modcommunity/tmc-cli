@@ -50,6 +50,16 @@ authority. Anything it doesn't know can still be sent with
 
 Change these only with the reason in hand:
 
+- **The base URL is the API origin, but the paths keep `/api`** (`config.py`).
+  The four public surfaces moved to `api.moddingcommunity.com`, where the docs
+  print the short form (`/content/...`). That spelling exists only because
+  nginx's `location /` rewrites the prefix back on, so it is absent the moment
+  this tool is pointed straight at a container or a dev checkout — which is half
+  of what `--base-url` is for. `/api/content/...` is the route's real name in the
+  app and answers on the API origin, on the apex and against a bare container,
+  so it is the one spelling sent. The apex still answers at all because it
+  PROXIES rather than redirects: a cross-origin redirect strips `Authorization`,
+  so a stored profile from before the move keeps working rather than 401ing.
 - **JWT assertions are signed per request attempt** (`http.py`). The `jti` is
   one-shot server-side; hoisting the header out of the retry loop turns every
   retry into a 400.
@@ -73,7 +83,9 @@ Change these only with the reason in hand:
   "what does the public see?" unanswerable.
 - **Anonymous list filters are dropped locally, with a warning** (`client.py`).
   The server ignores an unknown query param, so a silently-dropped `--search`
-  reads as a search that matched everything.
+  reads as a search that matched everything. The anonymous listing takes exactly
+  two — `appId` and `official` — and the keyed listing takes neither, so
+  `content_cmd.py` warns in that direction too.
 - **Relation DELETE batches at 500, PUT/POST at 200.** Two different server caps
   (`RELATION_MEMBERS_MAX` bounds the body; `z.array(def.schema).max(200)` bounds
   the elements), and only a DELETE — which names keys, not members — can use the

@@ -23,6 +23,7 @@ from .http import FilePart, Response, Transport, chunked
 from .schema import (
     ANON_APP_FILTER_TYPES,
     ANON_LIST_FILTERS,
+    ANON_OFFICIAL_FILTER_TYPES,
     ANON_TYPES,
     MAX_BULK_DELETE,
     MAX_BULK_WRITE,
@@ -494,6 +495,10 @@ class ContentClient:
                 continue
 
             if name == "appId" and type_name not in ANON_APP_FILTER_TYPES:
+                dropped.append(name)
+                continue
+
+            if name == "official" and type_name not in ANON_OFFICIAL_FILTER_TYPES:
                 dropped.append(name)
                 continue
 

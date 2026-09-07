@@ -25,7 +25,14 @@ from .context import Context
 from .commands import auth_cmd, content_cmd, file_cmd, misc_cmd, relation_cmd, release_cmd
 from .errors import ApiError, CliError, EXIT_OK, EXIT_USAGE
 from .output import FORMATS
-from .schema import ALL_TYPES, ANON_APP_FILTER_TYPES, ANON_TYPES, RELATIONS, TYPES
+from .schema import (
+    ALL_TYPES,
+    ANON_APP_FILTER_TYPES,
+    ANON_OFFICIAL_FILTER_TYPES,
+    ANON_TYPES,
+    RELATIONS,
+    TYPES,
+)
 from .version import __version__
 
 # Types that get a top-level command of their own. `release` and `media` are
@@ -57,7 +64,9 @@ def _add_connection_flags(parser: argparse.ArgumentParser, *, leaf: bool) -> Non
             "(summaries of completely public items; GET only)"
         ),
     )
-    group.add_argument("--base-url", default=default, help="site root, e.g. https://moddingcommunity.com")
+    group.add_argument(
+        "--base-url", default=default, help="API root, e.g. https://api.moddingcommunity.com"
+    )
     group.add_argument("--token", default=default, help="bearer token (overrides the profile)")
     group.add_argument("--key-id", default=default, help="JWT key id (tmcak_…)")
     group.add_argument("--private-key", default=default, help="path to the Ed25519 PKCS#8 PEM")
@@ -224,6 +233,24 @@ def _add_type_ops(parser: argparse.ArgumentParser, type_name: str) -> None:
         )
     else:
         listing.add_argument("--app", type=int, help=argparse.SUPPRESS)
+
+    # `official` is the other anonymous-only filter, and for articles it IS the
+    # blog — the flag is what puts a post there. Without it a caller wanting the
+    # blog has to page the whole article table and filter client-side.
+    if type_name in ANON_OFFICIAL_FILTER_TYPES:
+        listing.add_argument(
+            "--official",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="only the site's own posts — anonymous listings only (--anon)",
+        )
+    else:
+        listing.add_argument(
+            "--official",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=argparse.SUPPRESS,
+        )
 
     # -- get
     read_help = f"read one {type_name}"

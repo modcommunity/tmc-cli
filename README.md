@@ -62,6 +62,7 @@ that are completely public. `--anon` is how you ask for that:
 ```bash
 tmc mod get 123 --anon
 tmc mod list --anon --app 4 -o json
+tmc article list --anon --official -o json    # the blog
 ```
 
 What comes back is a **summary** — id, name, slug, path, description, app,
@@ -70,10 +71,12 @@ record. It is a genuinely different endpoint, so a few things follow:
 
 - **Seven types only:** `asset`, `mod`, `server`, `community`, `article`,
   `collection`, `group`. Relations, files, comments and reviews always need a key.
-- **One list filter,** `--app`, and only on the four types that have an app.
-  `--search`, `--tag`, `--category`, `--mine` are dropped with a warning rather
-  than silently ignored — the server would ignore them, and a filter that did
-  nothing looks exactly like one that matched everything.
+- **Two list filters,** `--app` and `--official`, each only on the four types
+  whose model has the column. `--search`, `--tag`, `--category`, `--mine` are
+  dropped with a warning rather than silently ignored — the server would ignore
+  them, and a filter that did nothing looks exactly like one that matched
+  everything. Both are anonymous-only, and the keyed list warns the same way in
+  the other direction.
 - **Read-only.** Any write is refused before the request leaves, since sending it
   would come back as a 401 that blames a key you did not send.
 - **Its own quota,** counted per source address and deliberately small. A key is
@@ -253,10 +256,27 @@ tmc completion fish > ~/.config/fish/completions/tmc.fish
 python -m unittest discover -s tests
 ```
 
-75 tests run the real CLI against an in-process mock of the API over a real
+85 tests run the real CLI against an in-process mock of the API over a real
 socket, covering both auth modes (including Ed25519 against RFC 8032 vectors and
 an openssl-generated key), the anonymous surface, batching, relation
 merge/replace semantics, the release workflow and the retry path.
+
+## Which address it talks to
+
+The default is `https://api.moddingcommunity.com` — the public APIs now live on
+an origin of their own. The old address still works: the apex **proxies**
+`/api/content` to the same service rather than redirecting to it, deliberately,
+because a cross-origin redirect strips the `Authorization` header and would have
+turned every keyed call into a 401. So a profile saved before the move keeps
+working and there is nothing to migrate; `--base-url` still points the tool at a
+staging site, a container or a dev checkout.
+
+The docs print the short form `api.moddingcommunity.com/content/...`, but this
+tool sends `/api/content/...`. That is the route's real name — the short spelling
+exists because nginx rewrites the prefix back on, so it is the one that stops
+working the moment you point `--base-url` straight at a container or a dev
+checkout with no proxy in front of it. The prefixed form answers on every one of
+them.
 
 ## Reference
 

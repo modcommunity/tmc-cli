@@ -70,6 +70,11 @@ def list_items(ctx: Context) -> int:
     if getattr(args, "app", None) is not None:
         filters["appId"] = args.app
 
+    if getattr(args, "official", None) is not None:
+        # The server reads anything but `0`/`false`/`no` as true, so send the
+        # two spellings it names rather than trusting Python's `True`.
+        filters["official"] = 1 if args.official else 0
+
     unsupported = [
         name
         for name in ("search", "tags", "categoryIds", "communityId", "nsfw")
@@ -82,15 +87,23 @@ def list_items(ctx: Context) -> int:
     for name in unsupported:
         output.warn(f"'{name}' is not a filter on {spec.name} — it will be ignored.")
 
-    # `appId` is the mirror image: it is the anonymous listing's only filter and
-    # is not a filter on the keyed one at all. The client drops what --anon
-    # cannot use and warns; this covers the other direction.
+    # `appId` and `official` are the mirror image: they are the anonymous
+    # listing's only two filters and are not filters on the keyed one at all.
+    # The client drops what --anon cannot use and warns; this covers the other
+    # direction.
     if "appId" in filters and not ctx.client.http.anonymous:
         output.warn(
             "the keyed list has no app filter — '--app' will be ignored. "
             "Pass --anon to use it, or filter on the results."
         )
         filters.pop("appId")
+
+    if "official" in filters and not ctx.client.http.anonymous:
+        output.warn(
+            "the keyed list has no official filter — '--official' will be "
+            "ignored. Pass --anon to use it, or filter on the results."
+        )
+        filters.pop("official")
 
     rows, pagination = ctx.client.list(
         spec.name,
