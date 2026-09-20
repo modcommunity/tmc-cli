@@ -46,6 +46,29 @@ website repo wins:
 authority. Anything it doesn't know can still be sent with
 `--allow-unknown-fields` or `tmc raw`, so a stale mirror is never a blocker.
 
+**Which is exactly how it rots.** Nothing here fails when the site adds a
+field; the field just looks like a typo, `tmc schema` omits it, and completion
+never offers it. `scripts/schema-drift.py` is what can see that — it runs a
+dump of `CONTENT_REGISTRY` inside the website-city checkout next door and diffs
+the field and relation lists against `schema.py`:
+
+```bash
+python3 scripts/schema-drift.py              # ../website-city
+python3 scripts/schema-drift.py --city ~/src/website-city
+```
+
+Run it after a release on the site. It is **not** part of `unittest discover`
+and should not become part of it: it needs website-city, its `.env`, its
+`node_modules` and a working `tsx`, and a test that skips itself on four
+conditions is a test that is always skipping.
+
+A field the mirror leaves out deliberately goes in that script's
+`EXPECTED_ABSENT` with the reason. There is one: `collection.ownerId`, which is
+in the public schema only because `collectionFields` omits `id` alone where the
+other six canonical types also omit `ownerId` — and `stripOwner()` in
+`handler.ts` deletes it from the body before the schema sees it. Accepted and
+silently discarded is the one outcome not worth a flag.
+
 ## Behaviours that exist for a specific reason
 
 Change these only with the reason in hand:

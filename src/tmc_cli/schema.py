@@ -197,6 +197,14 @@ TYPES: dict[str, TypeSpec] = {
                 f("media", JSON, "replaces the gallery — prefer the relation"),
                 f("releases", JSON, "replaces all releases — prefer the relation"),
                 f("sourceItems", JSON, "replaces external sources ('sources' relation)"),
+                # The `<repo>` half of the `<owner>/<repo>` this asset publishes
+                # game content packs under. Bounded by the ENGINE's rule rather
+                # than a slug's: a content id is a path component in the client
+                # and dot-cloud requires each segment to equal its own slug, so
+                # a name this accepts and the client does not is a pack that
+                # publishes and will not mount. Null returns the asset to the
+                # name derived from its own, rather than leaving it unpublishable.
+                f("repoName", STR, "pack namespace; null restores the derived default"),
             ]
             + IMAGES
             + ENGAGEMENT
@@ -403,11 +411,29 @@ TYPES: dict[str, TypeSpec] = {
                 f("categoryIds", INT_LIST),
                 f("tags", STR_LIST),
                 f("items", JSON, "prefer the 'items' relation"),
+                # Tri-state, like every other optional parent: omit to leave it,
+                # a number to file the collection under that game, null to clear
+                # it back to a site-wide collection.
+                f("appId", INT, "the game this collection is filed under"),
+                # A collection has a gallery of its OWN, separate from the tied
+                # items' galleries that `includeItemMedia` merges in after it.
+                #
+                # NOTE this is the only way to set one. `media` is a relation on
+                # asset, mod, server, community and article; collection is not in
+                # `RELATION_DEFS.media.types`, so there is no
+                # `/collection/{id}/media` endpoint and the bulk field is it.
+                f("media", JSON, "replaces the gallery — an empty array clears it"),
                 f("createdAt", DATE, staff_only=True),
             ]
             + IMAGES
             + VISIBILITY
         ),
+        # `ownerId` is deliberately ABSENT even though `collectionFields` is the
+        # one type whose omit-list does not strip it (`.omit({ id: true })`,
+        # where the other six also omit `ownerId` and `updateLastEdit`). The
+        # handler's `stripOwner` deletes it from the body before the schema is
+        # reached, so sending it is accepted and silently discarded — which is
+        # the one outcome worth not offering a flag for.
         relations=("tags", "items"),
         list_filters=("search", "tags", "nsfw"),
         columns=("id", "name", "hidden", "nsfw", "createdAt"),
