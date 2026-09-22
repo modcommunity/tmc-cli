@@ -260,6 +260,37 @@ class TestContent(CliTestCase):
 
         self.assertEqual(len(output.strip().splitlines()), 12)
 
+    def test_ls_is_the_same_command_as_list(self) -> None:
+        for index in range(3):
+            self.seed_mod(name=f"Mod {index}")
+
+        self.assertEqual(
+            self.run_cli("mod", "ls", "-o", "ids"),
+            self.run_cli("mod", "list", "-o", "ids"),
+        )
+
+    def test_get_without_an_id_lists(self) -> None:
+        for index in range(3):
+            self.seed_mod(name=f"Mod {index}")
+
+        self.assertEqual(
+            self.run_cli("mod", "get", "-o", "ids"),
+            self.run_cli("mod", "list", "-o", "ids"),
+        )
+
+    def test_get_without_an_id_takes_the_list_filters(self) -> None:
+        self.seed_mod(name="Public")
+        self.seed_mod(name="Draft", hidden=True)
+
+        self.assertEqual(
+            len(self.run_cli("mod", "get", "--mine", "-o", "ids").strip().splitlines()), 2
+        )
+
+    def test_get_with_an_id_still_reads_one(self) -> None:
+        mod_id = self.seed_mod(name="Just this one")
+
+        self.assertIn("Just this one", self.run_cli("mod", "get", str(mod_id)))
+
     def test_list_hides_hidden_unless_mine(self) -> None:
         self.seed_mod(name="Public")
         self.seed_mod(name="Draft", hidden=True)
@@ -1257,3 +1288,46 @@ class RedactAuthorizationTests(unittest.TestCase):
 
         self.assertNotIn("tmc_", line)
         self.assertNotIn("barenakedsecret", line)
+
+
+class TrailingHelpTests(unittest.TestCase):
+    """`tmc mod help` means `tmc mod --help`, but only after a command."""
+
+    def setUp(self) -> None:
+        self.parser = cli.build_parser()
+
+    def rewrite(self, *argv: str) -> list[str]:
+        return cli.rewrite_trailing_help(self.parser, list(argv))
+
+    def test_a_group_takes_it(self) -> None:
+        self.assertEqual(self.rewrite("mod", "help"), ["mod", "--help"])
+
+    def test_a_leaf_takes_it(self) -> None:
+        self.assertEqual(self.rewrite("mod", "list", "help"), ["mod", "list", "--help"])
+        self.assertEqual(self.rewrite("rel", "get", "help"), ["rel", "get", "--help"])
+
+    def test_an_alias_takes_it(self) -> None:
+        self.assertEqual(self.rewrite("mod", "ls", "help"), ["mod", "ls", "--help"])
+
+    def test_bare_help_is_the_root(self) -> None:
+        self.assertEqual(self.rewrite("help"), ["--help"])
+
+    def test_a_value_that_happens_to_be_help_is_left_alone(self) -> None:
+        # `tmc tags add mod 5 help` adds a tag CALLED "help". Rewriting this is
+        # a silent wrong write, which is why the walk has to reach the word.
+        self.assertEqual(
+            self.rewrite("tags", "add", "mod", "5", "help"),
+            ["tags", "add", "mod", "5", "help"],
+        )
+
+    def test_a_line_without_the_word_is_untouched(self) -> None:
+        self.assertEqual(self.rewrite("mod", "list"), ["mod", "list"])
+
+    def test_it_prints_help_and_exits_clean(self) -> None:
+        out = io.StringIO()
+
+        with redirect_stdout(out):
+            code = cli.main(["mod", "help"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("<operation>", out.getvalue())

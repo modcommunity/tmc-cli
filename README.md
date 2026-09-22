@@ -96,7 +96,12 @@ tmc mod list --search rust --tag pvp -o json
 tmc mod get 42
 tmc mod update 42 --set description="Now with fewer bugs"
 tmc mod delete 42
+tmc open mod 42                                 # its page on the site
 ```
+
+`ls` is an alias for `list`, and `get` with no id lists as well, so whichever of
+the three you reach for first is the one that works. `help` after a command is
+the same as `--help` on it: `tmc mod help`, `tmc rel add help`.
 
 Creating something, with the body read from a file and the icon uploaded on the
 way through:
@@ -121,7 +126,9 @@ $ tmc mod create --set tgs=pvp …
 error: 'mod' has no field 'tgs'. Did you mean 'tags'?
 ```
 
-Run `tmc schema mod` for the field list, or `tmc schema` for everything.
+Run `tmc schema mod` for the field list, or `tmc schema` for everything. Run
+`tmc contract sync` first and both answer from the live site rather than from
+this build's mirror — see [Staying in step with the site](#staying-in-step-with-the-site).
 
 ## Releases and files
 This is the part worth having a tool for. `release publish` uploads the files,
@@ -232,15 +239,59 @@ Exit codes: `0` ok, `2` usage, `3` auth (401/403), `4` not found, `5` validation
 - **Pagination.** `--all` walks it, `--max` stops early.
 - **Streaming uploads.** A 1 GB file is read from disk in chunks, not into RAM.
 
-## Escape hatch
+## Staying in step with the site
 This CLI mirrors the API's field list locally so it can catch typos before
-spending a request — which means it can be one deploy behind. Nothing is ever
-blocked by that:
+spending a request — which means it can be one deploy behind. The site publishes
+what it actually accepts, so the mirror does not have to guess:
+
+```bash
+tmc contract sync          # fetch it (no key needed) and cache it
+tmc contract show          # what is cached, and whether it is in use
+tmc contract drift         # what the site has that this CLI does not
+tmc contract clear         # forget it
+```
+
+After a sync, `--set` coercion, the unknown-field check, `tmc schema` and the
+completion scripts all answer from the **site's** field list instead of this
+build's. The commands do not change: `--help` has to work with no network, and a
+tool whose command list depends on the last successful fetch is a tool whose
+`--help` differs between two machines. So `sync` keeps this accurate about
+fields, and `drift` tells you when the tool itself needs a release.
+
+A cached contract is used only against the site it came from, and only for 30
+days. Two profiles pointed at production and a dev checkout have different
+registries, and judging one by the other's field list is worse than having none.
+
+`drift` exits **3** when the two disagree, so CI can run it:
+
+```bash
+tmc contract drift --fetch --base-url https://moddingcommunity.com
+```
+
+It reports three things separately, because they mean different things:
+
+| It says | What to do |
+| --- | --- |
+| fields the site has that this CLI does not | nothing — a synced contract already covers them |
+| commands the site has that this CLI does not | release this CLI; `tmc raw` reaches them today |
+| fields this CLI is stricter about | nothing — this CLI refuses a float for `appId` and the server would take one |
+
+The document is `GET <base>/api/content/spec` and needs no credential — it is
+the one thing a fresh install runs before `tmc auth login`. Its shape is in
+[`cli-contract.md`](../website-city/docs/api/cli-contract.md).
+
+## Escape hatch
+Nothing is ever blocked by a stale mirror, contract or no contract:
 
 ```bash
 tmc mod create --set someNewField=1 --allow-unknown-fields
 tmc raw PUT /api/content/mod/5/releases --json @releases.json
 ```
+
+There is a second implementation of this same command grammar: the **web
+console** at `/console` on the site, and in the corner of every page. It runs as
+your signed-in session rather than as a key, so there is nothing to log into —
+and it is the thing the contract keeps this tool in step with.
 
 ## Shell completion
 

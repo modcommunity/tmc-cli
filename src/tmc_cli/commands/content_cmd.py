@@ -26,18 +26,18 @@ from ..client import BulkResult
 from ..context import Context
 from ..errors import UsageError
 from ..params import build_payload, load_json_file, require_list
-from ..schema import ANON_COLUMNS, TYPES, TypeSpec
+from ..schema import ANON_COLUMNS, TypeSpec, known_types, spec_for
 
 
 def _spec(ctx: Context) -> TypeSpec:
     name = ctx.args.type
 
-    spec = TYPES.get(name)
+    spec = spec_for(name)
 
     if spec is None:
         raise UsageError(
             f"Unknown content type '{name}'.",
-            hint=f"Known types: {', '.join(TYPES)}",
+            hint=f"Known types: {', '.join(known_types())}",
         )
 
     return spec
@@ -131,6 +131,12 @@ def _columns(ctx: Context, spec: TypeSpec) -> tuple[str, ...]:
 
 def get_item(ctx: Context) -> int:
     spec = _spec(ctx)
+
+    # No id means the whole page of them. `tmc mod get` is what most people
+    # reach for before they find `tmc mod list`, and the two are one command
+    # with two spellings rather than a hint pointing at the other.
+    if getattr(ctx.args, "id", None) is None:
+        return list_items(ctx)
 
     row = ctx.client.get(spec.name, ctx.args.id)
 

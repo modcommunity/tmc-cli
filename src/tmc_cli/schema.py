@@ -189,6 +189,7 @@ TYPES: dict[str, TypeSpec] = {
                 f("apiPublic", BOOL, "answer this item without a key (default true)"),
                 f("subDisabled", BOOL, "opt out of one-click subscribe/install"),
                 f("isOfficial", BOOL, staff_only=True),
+                f("officialPack", BOOL, staff_only=True),
                 f("appId", INT),
                 f("communityId", INT),
                 f("categoryId", INT, "legacy single-select"),
@@ -415,6 +416,10 @@ TYPES: dict[str, TypeSpec] = {
                 # a number to file the collection under that game, null to clear
                 # it back to a site-wide collection.
                 f("appId", INT, "the game this collection is filed under"),
+                # Found by `tmc contract drift`: the API accepts it, the mirror
+                # did not know about it. Staff-only in practice — an ordinary
+                # key's items are owned by its own user either way.
+                f("ownerId", STR, staff_only=True),
                 # A collection has a gallery of its OWN, separate from the tied
                 # items' galleries that `includeItemMedia` merges in after it.
                 #
@@ -574,6 +579,53 @@ CANONICAL_TYPES = tuple(name for name, spec in TYPES.items() if spec.canonical)
 ALL_TYPES = tuple(TYPES.keys())
 
 
+# ---- The live contract's view of all that ------------------------------------
+#
+# `TYPES` above is what this BUILD believes. The site publishes what it actually
+# accepts (`/api/content/spec`), and `contract.py` overlays that on top when a
+# cached copy for the current profile is available — so a field added upstream
+# stops looking like a typo the moment somebody runs `tmc contract sync`.
+#
+# The override lives here rather than in `contract.py` so that module can import
+# this one without this one importing it back. Nothing else changes: every
+# lookup that used to index `TYPES` goes through `spec_for` / `known_types`, and
+# with no contract installed those return exactly what they always did.
+#
+# The COMMANDS are deliberately not overridable — argparse builds the parser at
+# import time and `--help` has to work with no network. `tmc contract drift`
+# reports what the site has grown; `tmc raw` reaches it in the meantime.
+
+_OVERRIDE: dict[str, TypeSpec] | None = None
+
+
+def install_override(types: dict[str, TypeSpec]) -> None:
+    """Replace the mirror's view of the types for this process."""
+
+    global _OVERRIDE
+
+    _OVERRIDE = types
+
+
+def clear_override() -> None:
+    global _OVERRIDE
+
+    _OVERRIDE = None
+
+
+def active_types() -> dict[str, TypeSpec]:
+    """The type table to answer questions from: the contract's, or the mirror's."""
+
+    return _OVERRIDE if _OVERRIDE is not None else TYPES
+
+
+def spec_for(type_name: str) -> TypeSpec | None:
+    return active_types().get(type_name)
+
+
+def known_types() -> list[str]:
+    return sorted(active_types())
+
+
 # ---- Relations ---------------------------------------------------------------
 
 
@@ -648,6 +700,18 @@ RELATIONS: dict[str, RelationSpec] = {
 
 
 def relations_for(type_name: str) -> list[str]:
+    """Which relations hang off this type.
+
+    The contract knows this per type and is authoritative when installed; the
+    `RELATIONS` table below still owns each relation's KEY and MEMBER columns,
+    which the contract does not carry.
+    """
+
+    spec = spec_for(type_name)
+
+    if spec is not None and _OVERRIDE is not None:
+        return list(spec.relations)
+
     return [name for name, spec in RELATIONS.items() if type_name in spec.parents]
 
 

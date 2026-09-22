@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 """Compare `schema.py`'s mirror against website-city's real content registry.
 
+PREFER `tmc contract drift`
+---------------------------
+The site now PUBLISHES its registry and its console's command grammar at
+`<base>/api/content/spec`, and `tmc contract sync` / `tmc contract drift` read
+it. That is the tool to reach for: it needs no checkout, no `.env`, no
+`node_modules` and no `tsx`, it works against staging and production, and it
+compares the COMMANDS as well as the fields.
+
+This script is still here for the one thing the command cannot do: check a
+website-city working tree that has not been deployed anywhere yet. Run it before
+the deploy; run `tmc contract drift` after.
+
 WHY THIS EXISTS
 ---------------
 `schema.py` is a mirror, and its own docstring says the server decides. That is

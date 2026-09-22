@@ -25,8 +25,10 @@ from ..schema import (
     MAX_RELATION_MEMBERS,
     MAX_UPLOAD_PARTS,
     RELATIONS,
-    TYPES,
+    active_types,
+    known_types,
     relations_for,
+    spec_for,
 )
 from .relation_cmd import dump_member_template
 
@@ -35,12 +37,12 @@ def schema(ctx: Context) -> int:
     args = ctx.args
 
     if args.type:
-        spec = TYPES.get(args.type)
+        spec = spec_for(args.type)
 
         if spec is None:
             raise UsageError(
                 f"Unknown content type '{args.type}'.",
-                hint=f"Known: {', '.join(TYPES)}",
+                hint=f"Known: {', '.join(known_types())}",
             )
 
         if args.output == "json":
@@ -83,7 +85,7 @@ def schema(ctx: Context) -> int:
                             "relations": relations_for(name),
                             "fields": spec.field_names(),
                         }
-                        for name, spec in TYPES.items()
+                        for name, spec in active_types().items()
                     },
                     "relations": {
                         name: {
@@ -115,7 +117,7 @@ def schema(ctx: Context) -> int:
     print("Content types")
     print()
 
-    for name, spec in TYPES.items():
+    for name, spec in active_types().items():
         flags = []
 
         if spec.canonical:
@@ -198,6 +200,40 @@ def _print_type(spec: Any) -> None:
 
     print()
     print("  Set fields with --set name=value, --set-json name='<json>' or --set-file name=path.")
+
+
+def open_item(ctx: Context) -> int:
+    """`tmc open <type> <id>` — where that item lives on the site.
+
+    The address is READ OFF THE RECORD rather than derived from the id. A mod
+    lives under its app (`/seedgame/m/3-…`), so the app's segment and the slug
+    both have to come from somewhere, and the API returns `url` and `path` for
+    exactly this reason. Fetching also means `open` inherits the read gate: an id
+    you may not see fails here instead of sending you to a page that will.
+    """
+
+    args = ctx.args
+    row = ctx.client.get(args.type, args.id)
+
+    if not isinstance(row, dict):
+        raise UsageError(f"{args.type} {args.id} did not answer a record.")
+
+    address = row.get("url") or row.get("path")
+
+    if not address:
+        raise UsageError(
+            f"{args.type} {args.id} carries no address.",
+            hint="Not every row has a page of its own.",
+        )
+
+    print(address)
+
+    if args.browser:
+        import webbrowser
+
+        webbrowser.open(str(address))
+
+    return 0
 
 
 def template(ctx: Context) -> int:
@@ -339,7 +375,7 @@ def completion(ctx: Context) -> int:
 
     print(
         body.replace("__COMMANDS__", " ".join(top_level_commands()))
-        .replace("__TYPES__", " ".join(TYPES))
+        .replace("__TYPES__", " ".join(known_types()))
         .replace("__RELATIONS__", " ".join(RELATIONS))
         .strip()
     )

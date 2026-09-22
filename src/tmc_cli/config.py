@@ -317,6 +317,61 @@ def resolve(args: Any) -> Settings:
     )
 
 
+def resolve_unkeyed(args: Any) -> Settings:
+    """Everything `resolve` works out, minus the credential.
+
+    For the endpoints that take none. `resolve` treats a missing credential as an
+    error on purpose — a 401 later reads as "your key is wrong" when in fact
+    none was found — but that is the wrong answer for `tmc contract sync`, which
+    a freshly installed CLI runs BEFORE `tmc auth login` and which sends no
+    `Authorization` header in any case.
+
+    Same precedence for everything else, so `--base-url`, `--insecure`,
+    `--timeout` and the profile all behave exactly as they do elsewhere.
+    """
+
+    config = Config.load()
+
+    profile_name = (
+        getattr(args, "profile", None) or _env("PROFILE") or config.default_profile
+    )
+    profile = config.profiles.get(profile_name)
+
+    base_url = (
+        getattr(args, "base_url", None)
+        or _env("BASE_URL")
+        or (profile.base_url if profile else None)
+        or DEFAULT_BASE_URL
+    )
+
+    options = dict(profile.options) if profile else {}
+
+    def opt(name: str, default: Any) -> Any:
+        flag = getattr(args, name, None)
+
+        if flag is not None:
+            return flag
+
+        env = _env(name.upper())
+
+        if env is not None:
+            return type(default)(env)
+
+        return options.get(name, default)
+
+    return Settings(
+        base_url=base_url.rstrip("/"),
+        credential=AnonymousCredential(),
+        profile_name=profile_name,
+        timeout=float(opt("timeout", 60.0)),
+        retries=int(opt("retries", 3)),
+        retry_wait_max=float(opt("retry_wait_max", 120.0)),
+        verify_tls=not getattr(args, "insecure", False),
+        debug=bool(getattr(args, "debug", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+
+
 def _resolve_credential(
     args: Any, profile: Profile | None, profile_name: str
 ) -> Credential:

@@ -20,9 +20,17 @@ import argparse
 import sys
 from typing import Any, Callable, Sequence
 
-from . import output
+from . import contract, output
 from .context import Context
-from .commands import auth_cmd, content_cmd, file_cmd, misc_cmd, relation_cmd, release_cmd
+from .commands import (
+    auth_cmd,
+    content_cmd,
+    contract_cmd,
+    file_cmd,
+    misc_cmd,
+    relation_cmd,
+    release_cmd,
+)
 from .errors import ApiError, CliError, EXIT_OK, EXIT_USAGE
 from .output import FORMATS
 from .schema import (
@@ -191,33 +199,35 @@ def _add_body_flags(parser: argparse.ArgumentParser, spec: Any) -> None:
         )
 
 
-def _add_type_ops(parser: argparse.ArgumentParser, type_name: str) -> None:
-    """The five verbs, for one content type."""
+def _add_list_filters(
+    parser: argparse.ArgumentParser, type_name: str, spec: Any
+) -> None:
+    """Paging and filtering, for anything that returns a page of rows.
 
-    spec = TYPES[type_name]
-    ops = parser.add_subparsers(dest="op", metavar="<operation>", required=True)
+    Attached to BOTH `list` and `get`, because `tmc mod get` with no id is the
+    listing — a flag that works under one spelling and not the other is worse
+    than not offering the spelling at all.
+    """
 
-    # -- list
-    listing = _leaf(ops, "list", f"list {type_name}s", content_cmd.list_items)
-    listing.add_argument("--page", type=int, default=1, help="page number (default 1)")
-    listing.add_argument("--limit", type=int, help="page size (server default 1000)")
-    listing.add_argument(
+    parser.add_argument("--page", type=int, default=1, help="page number (default 1)")
+    parser.add_argument("--limit", type=int, help="page size (server default 1000)")
+    parser.add_argument(
         "--mine",
         action="store_true",
         help="only rows you own — the only way to list your own hidden items",
     )
-    listing.add_argument("--all", action="store_true", help="walk every page")
-    listing.add_argument("--max", type=int, help="stop after this many rows (with --all)")
+    parser.add_argument("--all", action="store_true", help="walk every page")
+    parser.add_argument("--max", type=int, help="stop after this many rows (with --all)")
 
     if "search" in spec.list_filters:
-        listing.add_argument("--search", help="name/title contains (case-insensitive)")
+        parser.add_argument("--search", help="name/title contains (case-insensitive)")
     else:
-        listing.add_argument("--search", help=argparse.SUPPRESS)
+        parser.add_argument("--search", help=argparse.SUPPRESS)
 
-    listing.add_argument("--tag", action="append", help="has any of these tags (repeatable)")
-    listing.add_argument("--category", action="append", type=int, help="category id (repeatable)")
-    listing.add_argument("--community", type=int, help="community id")
-    listing.add_argument(
+    parser.add_argument("--tag", action="append", help="has any of these tags (repeatable)")
+    parser.add_argument("--category", action="append", type=int, help="category id (repeatable)")
+    parser.add_argument("--community", type=int, help="community id")
+    parser.add_argument(
         "--nsfw", action=argparse.BooleanOptionalAction, default=None, help="filter on the NSFW flag"
     )
 
@@ -225,32 +235,43 @@ def _add_type_ops(parser: argparse.ArgumentParser, type_name: str) -> None:
     # one implements every other filter but not this. They are two endpoints, so
     # the flag is offered only where it does something.
     if type_name in ANON_APP_FILTER_TYPES:
-        listing.add_argument(
+        parser.add_argument(
             "--app",
             type=int,
             metavar="ID",
             help="app id — anonymous listings only (--anon); the keyed list has no app filter",
         )
     else:
-        listing.add_argument("--app", type=int, help=argparse.SUPPRESS)
+        parser.add_argument("--app", type=int, help=argparse.SUPPRESS)
 
     # `official` is the other anonymous-only filter, and for articles it IS the
     # blog — the flag is what puts a post there. Without it a caller wanting the
     # blog has to page the whole article table and filter client-side.
     if type_name in ANON_OFFICIAL_FILTER_TYPES:
-        listing.add_argument(
+        parser.add_argument(
             "--official",
             action=argparse.BooleanOptionalAction,
             default=None,
             help="only the site's own posts — anonymous listings only (--anon)",
         )
     else:
-        listing.add_argument(
+        parser.add_argument(
             "--official",
             action=argparse.BooleanOptionalAction,
             default=None,
             help=argparse.SUPPRESS,
         )
+
+
+def _add_type_ops(parser: argparse.ArgumentParser, type_name: str) -> None:
+    """The five verbs, for one content type."""
+
+    spec = TYPES[type_name]
+    ops = parser.add_subparsers(dest="op", metavar="<operation>", required=True)
+
+    # -- list
+    listing = _leaf(ops, "list", f"list {type_name}s", content_cmd.list_items, aliases=["ls"])
+    _add_list_filters(listing, type_name, spec)
 
     # -- get
     read_help = f"read one {type_name}"
@@ -258,8 +279,9 @@ def _add_type_ops(parser: argparse.ArgumentParser, type_name: str) -> None:
     if type_name in ANON_TYPES:
         read_help += " (works without a key: --anon)"
 
-    getting = _leaf(ops, "get", read_help, content_cmd.get_item)
-    getting.add_argument("id", type=int)
+    getting = _leaf(ops, "get", read_help + "; omit the id to list them", content_cmd.get_item)
+    getting.add_argument("id", type=int, nargs="?", help="omit to list instead")
+    _add_list_filters(getting, type_name, spec)
 
     # -- create
     creating = _leaf(
@@ -313,6 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="<command>", required=True)
 
     _build_auth(sub)
+    _build_contract(sub)
     _build_types(sub)
     _build_content(sub)
     _build_relations(sub)
@@ -384,6 +407,50 @@ def _build_auth(sub: Any) -> None:
     token.add_argument("--header", action="store_true", help="print the full header line")
 
     _leaf(ops, "doctor", "check crypto backend, config permissions and connectivity", auth_cmd.doctor)
+
+
+def _build_contract(sub: Any) -> None:
+    """`tmc contract` — the site's own answer about what exists.
+
+    Separate from `schema`, which DESCRIBES the types: this manages where that
+    description comes from. Keeping them apart means `tmc schema mod` reads the
+    same whether or not a contract has ever been fetched, and the fetching is
+    something you go and do rather than something `schema` does behind your back.
+    """
+
+    contract = sub.add_parser(
+        "contract",
+        help="sync this CLI's idea of the API with the site's own",
+        description=(
+            "The site publishes its content registry and the command grammar of "
+            "its web console at <base>/api/content/spec, with no key. Syncing it "
+            "makes --set coercion, the unknown-field check, 'tmc schema' and "
+            "completion answer from the live site instead of this build's mirror."
+        ),
+    )
+    ops = contract.add_subparsers(dest="op", metavar="<operation>", required=True)
+
+    _leaf(ops, "sync", "fetch the site's contract and cache it", contract_cmd.sync)
+    _leaf(ops, "show", "what is cached, and whether it is in use", contract_cmd.show)
+    _leaf(ops, "clear", "forget the cached contract", contract_cmd.clear)
+
+    drift = _leaf(
+        ops,
+        "drift",
+        "what the site has that this CLI does not, and the other way round",
+        contract_cmd.drift,
+        epilog=(
+            "Exits 3 when the two disagree, so CI can run it.\n"
+            "Fields are already corrected by a synced contract; a missing COMMAND "
+            "needs a release of this CLI."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    drift.add_argument(
+        "--fetch",
+        action="store_true",
+        help="fetch fresh instead of reading the cache, and do not write it",
+    )
 
 
 def _build_types(sub: Any) -> None:
@@ -664,8 +731,58 @@ def _build_misc(sub: Any) -> None:
         "--envelope", action="store_true", help="print the whole response, not just its 'data'"
     )
 
+    opening = _leaf(
+        sub,
+        "open",
+        "print (or open) an item's page on the site",
+        misc_cmd.open_item,
+        epilog=(
+            "The address is read off the item, not built from its id: a mod "
+            "lives under its app, so the app segment and the slug both come "
+            "from the record."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    opening.add_argument("type", choices=sorted(TYPES), help="content type")
+    opening.add_argument("id", type=int)
+    opening.add_argument(
+        "--browser", action="store_true", help="open it in a browser as well as printing it"
+    )
+
     completion = _leaf(sub, "completion", "print a shell completion script", misc_cmd.completion)
     completion.add_argument("shell", choices=("bash", "zsh", "fish"))
+
+
+def local_command_paths() -> set[tuple[str, ...]]:
+    """Every command this build understands, as ('mod', 'list') tuples.
+
+    Walked off the BUILT PARSER rather than listed by hand, so a command added
+    to `_build_*` is a command `tmc contract drift` compares. A hand-kept list
+    would be a third mirror, and this whole feature exists because mirrors rot.
+    """
+
+    out: set[tuple[str, ...]] = set()
+
+    def walk(parser: argparse.ArgumentParser, prefix: tuple[str, ...]) -> None:
+        subs = [
+            action
+            for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        ]
+
+        if not subs:
+            if prefix:
+                out.add(prefix)
+
+            return
+
+        for action in subs:
+            for name, child in action.choices.items():
+                walk(child, prefix + (name,))
+
+    walk(build_parser(), ())
+
+    return out
 
 
 def top_level_commands() -> list[str]:
@@ -673,7 +790,7 @@ def top_level_commands() -> list[str]:
 
     return sorted(
         list(TOP_LEVEL_TYPES)
-        + ["auth", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "completion"]
+        + ["auth", "contract", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "open", "completion"]
     )
 
 
@@ -697,13 +814,61 @@ def _normalise_fields(args: argparse.Namespace) -> None:
     args.field = names
 
 
+def rewrite_trailing_help(parser: argparse.ArgumentParser, argv: list[str]) -> list[str]:
+    """`tmc mod help` → `tmc mod --help`.
+
+    argparse gives every sub-parser `-h/--help` and no `help` sub-command, so the
+    word people type out of git/docker habit came back as
+    `invalid choice: 'help'`. The web console accepts both spellings; so does
+    this.
+
+    Only rewritten when every word BEFORE it is a command — `tmc tags add mod 5
+    help` adds a tag called "help" and has to keep doing so. That also means a
+    global flag in front of the command (`tmc --profile ci mod help`) is not
+    rewritten: the walk cannot know a flag's arity, and guessing would eat a
+    value. `--help` still works there, as it does everywhere.
+    """
+
+    if not argv or argv[-1] != "help":
+        return argv
+
+    node = parser
+    depth = 0
+
+    for word in argv[:-1]:
+        subs = [
+            action
+            for action in node._actions
+            if isinstance(action, argparse._SubParsersAction)
+        ]
+        child = next(
+            (action.choices[word] for action in subs if word in action.choices), None
+        )
+
+        if child is None:
+            break
+
+        node = child
+        depth += 1
+
+    if depth != len(argv) - 1:
+        return argv
+
+    return argv[:-1] + ["--help"]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
 
+    raw = list(argv) if argv is not None else sys.argv[1:]
+
     try:
-        args = parser.parse_args(list(argv) if argv is not None else None)
+        args = parser.parse_args(rewrite_trailing_help(parser, raw))
     except SystemExit as err:  # argparse already printed the message
-        return int(err.code or EXIT_USAGE)
+        # `err.code or EXIT_USAGE` turned argparse's clean 0 — what `--help`
+        # and `--version` exit with — into a usage error, so `tmc --help` has
+        # always reported failure to a shell.
+        return EXIT_USAGE if err.code is None else int(err.code)
 
     _normalise_fields(args)
 
@@ -714,6 +879,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_USAGE
 
     ctx = Context(args)
+
+    """
+    Apply the cached contract, if there is a usable one for this profile.
+
+    Best effort and silent. It is an ACCURACY improvement — it corrects the
+    field list this build guessed at — and a CLI that refused to run because it
+    could not read a cache file would have traded a small inaccuracy for a total
+    outage. `tmc contract show` is where somebody asks whether it is in use.
+
+    Skipped for `tmc contract` itself: those commands reason about the cache and
+    must see the build's own mirror, not a view already corrected by it.
+    """
+    if getattr(args, "command", None) != "contract":
+        try:
+            contract.install_if_usable(ctx.settings.base_url)
+        except Exception:
+            pass
 
     try:
         return handler(ctx)

@@ -16,6 +16,7 @@ src/tmc_cli/
   http.py              transport: urllib, retries, multipart streaming
   client.py            the API as methods; batching lives here
   schema.py            local mirror of the server's content registry
+  contract.py          the site's OWN answer, fetched and overlaid on that
   params.py            --set/--json → a typed JSON body
   output.py            table/json/csv/yaml rendering
   commands/            one module per surface
@@ -48,19 +49,47 @@ authority. Anything it doesn't know can still be sent with
 
 **Which is exactly how it rots.** Nothing here fails when the site adds a
 field; the field just looks like a typo, `tmc schema` omits it, and completion
-never offers it. `scripts/schema-drift.py` is what can see that — it runs a
-dump of `CONTENT_REGISTRY` inside the website-city checkout next door and diffs
-the field and relation lists against `schema.py`:
+never offers it.
+
+**`tmc contract` is the answer to that, and the first thing to reach for.** The
+site publishes its registry and the command grammar of its own web console at
+`<base>/api/content/spec`, with no key. `contract.py` fetches it, caches it under
+the config directory, and overlays it on `TYPES`:
+
+```bash
+tmc contract sync --base-url https://moddingcommunity.com
+tmc contract drift          # exits 3 when the two disagree
+```
+
+Precedence after a sync: **field existence, type and requiredness come from the
+site**; **notes and enums stay the mirror's** (the contract carries neither);
+**commands stay the mirror's**, because argparse builds the parser at import
+time and `--help` must work offline. So a field the site added is corrected
+today and a command it grew needs a release — which is what `drift` says.
+
+`drift` separates three things deliberately, and only the first two fail it: a
+field the site has that this build lacks, a command the site has that this build
+lacks, and a field this build is STRICTER about. That last bucket is permanent
+and intentional — most id columns are `z.number()` with no `.int()` upstream —
+and folding it into the exit code would make the check fail forever and stop
+being read.
+
+`scripts/schema-drift.py` predates this and still works — it dumps
+`CONTENT_REGISTRY` from a website-city checkout next door rather than fetching
+the published contract:
 
 ```bash
 python3 scripts/schema-drift.py              # ../website-city
 python3 scripts/schema-drift.py --city ~/src/website-city
 ```
 
-Run it after a release on the site. It is **not** part of `unittest discover`
-and should not become part of it: it needs website-city, its `.env`, its
-`node_modules` and a working `tsx`, and a test that skips itself on four
-conditions is a test that is always skipping.
+Prefer `tmc contract drift` unless you need to check a checkout that has not been
+deployed yet, which is the one thing the script can do and the command cannot.
+Neither is part of `unittest discover` and neither should become part of it: the
+script needs website-city, its `.env`, its `node_modules` and a working `tsx`,
+and the command needs a reachable site — a test that skips itself on four
+conditions is a test that is always skipping. `tests/test_contract.py` covers
+everything about the contract that is decidable offline.
 
 A field the mirror leaves out deliberately goes in that script's
 `EXPECTED_ABSENT` with the reason. There is one: `collection.ownerId`, which is
