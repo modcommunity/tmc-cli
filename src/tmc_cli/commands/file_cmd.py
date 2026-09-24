@@ -14,6 +14,7 @@ from __future__ import annotations
 import glob as globlib
 import os
 import shutil
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -195,10 +196,18 @@ def download(ctx: Context) -> int:
             "which needs a signed-in session rather than an API key."
         )
 
-    destination = args.output_path or row.get("title") or f"{args.id}.bin"
+    # The URL is the server's answer, and urllib opens file:// and ftp:// too.
+    if urllib.parse.urlsplit(url).scheme.lower() not in ("http", "https"):
+        raise UsageError(f"File {args.id} has a download URL that is not http(s): {url}")
+
+    # The title is whatever the UPLOADER typed, and it is used as a filename
+    # when -O is not given. Taken as-is, a title of "../../.bashrc" or
+    # "/home/you/.ssh/authorized_keys" wrote the download there.
+    name = safe_filename(row.get("title"), f"{args.id}.bin")
+    destination = args.output_path or name
 
     if os.path.isdir(destination):
-        destination = os.path.join(destination, row.get("title") or f"{args.id}.bin")
+        destination = os.path.join(destination, name)
 
     ctx.progress(f"downloading {url}")
 
@@ -211,6 +220,17 @@ def download(ctx: Context) -> int:
     ctx.done(f"Saved {destination} ({human_size(size)})")
 
     return 0
+
+
+def safe_filename(title: Any, fallback: str) -> str:
+    """A server-supplied name reduced to one path component in the destination."""
+
+    name = str(title or "").replace("\\", "/").rsplit("/", 1)[-1].replace("\0", "").strip()
+
+    if name in ("", ".", ".."):
+        return fallback
+
+    return name
 
 
 def summarize(rows: list[dict[str, Any]]) -> str:

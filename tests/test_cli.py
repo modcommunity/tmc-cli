@@ -539,6 +539,64 @@ class TestFiles(CliTestCase):
         self.run_cli("file", "rm", file_id)
         self.assertEqual(STATE.files, {})
 
+    def _download(self, title: str, url: str | None = None, *extra: str) -> tuple[str, str]:
+        """Download a file whose row carries `title`, from inside a fresh cwd."""
+
+        import io as _io
+        from unittest import mock
+
+        from tmc_cli.commands import file_cmd
+
+        STATE.files["f1"] = {"id": "f1", "key": "k", "title": title, "size": 4}
+
+        if url is not None:
+            STATE.files["f1"]["url"] = url
+
+        root = tempfile.mkdtemp()
+        cwd = os.path.join(root, "cwd")
+        os.mkdir(cwd)
+
+        previous = os.getcwd()
+        os.chdir(cwd)
+
+        try:
+            with mock.patch.object(
+                file_cmd.urllib.request, "urlopen", return_value=_io.BytesIO(b"data")
+            ):
+                self.run_cli("file", "download", "f1", *extra)
+        finally:
+            os.chdir(previous)
+
+        return root, cwd
+
+    def test_download_keeps_a_hostile_title_inside_the_destination(self) -> None:
+        for title in ("../escaped.txt", "sub/../../escaped.txt", "..\\escaped.txt"):
+            root, cwd = self._download(title)
+
+            self.assertFalse(os.path.exists(os.path.join(root, "escaped.txt")), title)
+            self.assertTrue(os.path.exists(os.path.join(cwd, "escaped.txt")), title)
+
+    def test_download_ignores_an_absolute_title(self) -> None:
+        target = os.path.join(tempfile.mkdtemp(), "absolute.txt")
+        root, cwd = self._download(target)
+
+        self.assertFalse(os.path.exists(target))
+        self.assertTrue(os.path.exists(os.path.join(cwd, "absolute.txt")))
+
+    def test_download_into_a_directory_uses_a_safe_name(self) -> None:
+        outdir = tempfile.mkdtemp()
+        self._download("../../dir-escaped.txt", None, "-O", outdir)
+
+        self.assertTrue(os.path.exists(os.path.join(outdir, "dir-escaped.txt")))
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(outdir), "dir-escaped.txt")))
+
+    def test_download_refuses_a_non_http_url(self) -> None:
+        STATE.files["f1"] = {"id": "f1", "key": "k", "title": "x", "url": "file:///etc/passwd"}
+
+        stderr = self.run_cli_err("file", "download", "f1", expect=2)
+
+        self.assertIn("not http(s)", stderr)
+
 
 # ---- releases ---------------------------------------------------------------
 

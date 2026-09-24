@@ -722,7 +722,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(404, "Not found.")
                 return
 
-            self._json(200, {"data": {**row, "url": f"https://cdn.test/{row['key']}"}})
+            # A row may carry its own url, so a test can hand out a hostile one.
+            self._json(200, {"data": {"url": f"https://cdn.test/{row['key']}", **row}})
             return
 
         body = self._read_json()
