@@ -651,6 +651,12 @@ def _build_files(sub: Any) -> None:
     download = _leaf(ops, "download", "download a file via its CDN URL", file_cmd.download)
     download.add_argument("id")
     download.add_argument("-O", "--output-path", help="destination path or directory")
+    download.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="replace an existing file when the name comes from the file's title",
+    )
 
 
 def _build_releases(sub: Any) -> None:

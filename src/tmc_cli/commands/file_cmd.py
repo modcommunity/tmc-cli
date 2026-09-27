@@ -206,14 +206,52 @@ def download(ctx: Context) -> int:
     name = safe_filename(row.get("title"), f"{args.id}.bin")
     destination = args.output_path or name
 
+    # Whether the final component came from the server rather than from -O. A
+    # server-named file must not replace one that is already there: run from
+    # $HOME, a title of ".bashrc" is one path component and passes every check
+    # above, and in a shared directory a symlink planted under the expected
+    # name would carry the write anywhere its owner can.
+    server_named = not args.output_path
+
     if os.path.isdir(destination):
         destination = os.path.join(destination, name)
+        server_named = True
 
     ctx.progress(f"downloading {url}")
 
-    with urllib.request.urlopen(url, timeout=ctx.settings.timeout) as response:
-        with open(destination, "wb") as handle:
-            shutil.copyfileobj(response, handle)
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0)
+
+    if server_named and not args.force:
+        flags |= os.O_EXCL
+    else:
+        flags |= os.O_TRUNC
+
+    if server_named:
+        # Even with --force, never write THROUGH a link named by the server.
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+
+    try:
+        fd = os.open(destination, flags, 0o666)
+    except FileExistsError:
+        raise UsageError(
+            f"{destination} already exists; not overwriting it with a server-named download.",
+            hint="Pass --force to replace it, or -O to choose the path yourself.",
+        ) from None
+    except OSError as err:
+        raise UsageError(f"Cannot write {destination}: {err.strerror or err}") from None
+
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            with urllib.request.urlopen(url, timeout=ctx.settings.timeout) as response:
+                shutil.copyfileobj(response, handle)
+    except BaseException:
+        # Half a file under the real name reads as a finished download.
+        try:
+            os.unlink(destination)
+        except OSError:
+            pass
+
+        raise
 
     size = os.path.getsize(destination)
 
@@ -222,15 +260,62 @@ def download(ctx: Context) -> int:
     return 0
 
 
-def safe_filename(title: Any, fallback: str) -> str:
-    """A server-supplied name reduced to one path component in the destination."""
+# Names Windows maps to a device whatever the extension ("NUL.txt" is NUL).
+_WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
+    f"{stem}{n}" for stem in ("COM", "LPT") for n in "123456789\u00b9\u00b2\u00b3"
+}
 
-    name = str(title or "").replace("\\", "/").rsplit("/", 1)[-1].replace("\0", "").strip()
+# What one path component may occupy on every filesystem this runs on.
+_NAME_MAX_BYTES = 255
+
+
+def safe_filename(title: Any, fallback: str, *, windows: bool = os.name == "nt") -> str:
+    """A server-supplied name reduced to one path component in the destination.
+
+    Control characters go too: they are legal in a POSIX name, but the name is
+    echoed to the terminal ("Saved …"), where an escape sequence is an
+    instruction rather than text.
+    """
+
+    name = str(title or "").replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join("_" if _is_control(c) else c for c in name).strip()
+
+    if windows:
+        # "C:evil" joined onto a directory is drive-relative — a way out of it —
+        # and "name:stream" writes an alternate data stream. Trailing dots and
+        # spaces are silently dropped by Win32, so "..." would become "".
+        name = "".join("_" if c in '<>:"|?*' else c for c in name).rstrip(". ")
+
+        if name.split(".", 1)[0].rstrip(" ").upper() in _WINDOWS_RESERVED:
+            name = f"_{name}"
 
     if name in ("", ".", ".."):
         return fallback
 
-    return name
+    return _clip(name)
+
+
+def _is_control(char: str) -> bool:
+    code = ord(char)
+
+    return code < 0x20 or 0x7F <= code < 0xA0
+
+
+def _clip(name: str) -> str:
+    """Shorten to the filesystem's name limit, keeping a short extension."""
+
+    if len(name.encode("utf-8")) <= _NAME_MAX_BYTES:
+        return name
+
+    stem, dot, ext = name.rpartition(".")
+
+    if not dot or not stem or len(ext.encode("utf-8")) > 16:
+        stem, ext = name, ""
+
+    suffix = f".{ext}" if ext else ""
+    budget = _NAME_MAX_BYTES - len(suffix.encode("utf-8"))
+
+    return stem.encode("utf-8")[:budget].decode("utf-8", "ignore") + suffix
 
 
 def summarize(rows: list[dict[str, Any]]) -> str:

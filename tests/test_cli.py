@@ -539,7 +539,9 @@ class TestFiles(CliTestCase):
         self.run_cli("file", "rm", file_id)
         self.assertEqual(STATE.files, {})
 
-    def _download(self, title: str, url: str | None = None, *extra: str) -> tuple[str, str]:
+    def _download(
+        self, title: str, url: str | None = None, *extra: str, expect: int = 0, cwd: str | None = None
+    ) -> tuple[str, str]:
         """Download a file whose row carries `title`, from inside a fresh cwd."""
 
         import io as _io
@@ -552,9 +554,12 @@ class TestFiles(CliTestCase):
         if url is not None:
             STATE.files["f1"]["url"] = url
 
-        root = tempfile.mkdtemp()
-        cwd = os.path.join(root, "cwd")
-        os.mkdir(cwd)
+        if cwd is None:
+            root = tempfile.mkdtemp()
+            cwd = os.path.join(root, "cwd")
+            os.mkdir(cwd)
+        else:
+            root = os.path.dirname(cwd)
 
         previous = os.getcwd()
         os.chdir(cwd)
@@ -563,7 +568,7 @@ class TestFiles(CliTestCase):
             with mock.patch.object(
                 file_cmd.urllib.request, "urlopen", return_value=_io.BytesIO(b"data")
             ):
-                self.run_cli("file", "download", "f1", *extra)
+                self.run_cli("file", "download", "f1", *extra, expect=expect)
         finally:
             os.chdir(previous)
 
@@ -589,6 +594,106 @@ class TestFiles(CliTestCase):
 
         self.assertTrue(os.path.exists(os.path.join(outdir, "dir-escaped.txt")))
         self.assertFalse(os.path.exists(os.path.join(os.path.dirname(outdir), "dir-escaped.txt")))
+
+    def _cwd_with(self, name: str, content: bytes = b"precious") -> str:
+        cwd = os.path.join(tempfile.mkdtemp(), "cwd")
+        os.mkdir(cwd)
+
+        with open(os.path.join(cwd, name), "wb") as handle:
+            handle.write(content)
+
+        return cwd
+
+    def test_download_does_not_clobber_an_existing_file_named_by_the_title(self) -> None:
+        # Run from $HOME, a title of ".bashrc" is one harmless-looking component.
+        cwd = self._cwd_with(".bashrc")
+        self._download(".bashrc", None, expect=2, cwd=cwd)
+
+        with open(os.path.join(cwd, ".bashrc"), "rb") as handle:
+            self.assertEqual(handle.read(), b"precious")
+
+        self._download(".bashrc", None, "--force", cwd=cwd)
+
+        with open(os.path.join(cwd, ".bashrc"), "rb") as handle:
+            self.assertEqual(handle.read(), b"data")
+
+    def test_download_into_a_directory_does_not_clobber_either(self) -> None:
+        outdir = self._cwd_with("notes.txt")
+        self._download("notes.txt", None, "-O", outdir, expect=2)
+
+        with open(os.path.join(outdir, "notes.txt"), "rb") as handle:
+            self.assertEqual(handle.read(), b"precious")
+
+    def test_download_to_an_explicit_path_still_overwrites(self) -> None:
+        cwd = self._cwd_with("chosen.bin")
+        target = os.path.join(cwd, "chosen.bin")
+        self._download("whatever", None, "-O", target)
+
+        with open(target, "rb") as handle:
+            self.assertEqual(handle.read(), b"data")
+
+    @unittest.skipUnless(hasattr(os, "symlink") and hasattr(os, "O_NOFOLLOW"), "POSIX only")
+    def test_download_never_writes_through_a_planted_symlink(self) -> None:
+        victim = os.path.join(tempfile.mkdtemp(), "victim")
+
+        with open(victim, "wb") as handle:
+            handle.write(b"precious")
+
+        cwd = os.path.join(tempfile.mkdtemp(), "cwd")
+        os.mkdir(cwd)
+        os.symlink(victim, os.path.join(cwd, "release.zip"))
+
+        for extra in ((), ("--force",)):
+            self._download("release.zip", None, *extra, expect=2, cwd=cwd)
+
+            with open(victim, "rb") as handle:
+                self.assertEqual(handle.read(), b"precious", extra)
+
+    def test_a_failed_download_leaves_no_partial_file(self) -> None:
+        from tmc_cli.commands import file_cmd
+
+        STATE.files["f1"] = {"id": "f1", "key": "k", "title": "part.zip", "size": 4}
+        cwd = os.path.join(tempfile.mkdtemp(), "cwd")
+        os.mkdir(cwd)
+        previous = os.getcwd()
+        os.chdir(cwd)
+
+        class Dropped(io.BytesIO):
+            """A connection that delivers some bytes and then dies."""
+
+            def read(self, *args):
+                if self.tell():
+                    raise KeyboardInterrupt
+                return super().read(2)
+
+        try:
+            with mock.patch.object(
+                file_cmd.urllib.request, "urlopen", return_value=Dropped(b"data")
+            ):
+                self.run_cli("file", "download", "f1", expect=130)
+        finally:
+            os.chdir(previous)
+
+        self.assertEqual(os.listdir(cwd), [])
+
+    def test_safe_filename_edge_cases(self) -> None:
+        from tmc_cli.commands.file_cmd import safe_filename
+
+        # Terminal escapes and NUL never reach the name (or the "Saved" line).
+        self.assertEqual(safe_filename("a\x1b]0;pwned\x07b\0c", "fb", windows=False), "a_]0;pwned_b_c")
+        # Overlong: clipped to one legal component, extension kept.
+        long = safe_filename("x" * 400 + ".zip", "fb", windows=False)
+        self.assertEqual(len(long.encode()), 255)
+        self.assertTrue(long.endswith(".zip"))
+        self.assertLessEqual(len(safe_filename("é" * 300, "fb", windows=False).encode()), 255)
+        # POSIX keeps colons; Windows must not (drive-relative / ADS).
+        self.assertEqual(safe_filename("Build: v1.zip", "fb", windows=False), "Build: v1.zip")
+        self.assertEqual(safe_filename("C:evil.exe", "fb", windows=True), "C_evil.exe")
+        self.assertEqual(safe_filename("a.txt:stream", "fb", windows=True), "a.txt_stream")
+        self.assertEqual(safe_filename("NUL.txt", "fb", windows=True), "_NUL.txt")
+        self.assertEqual(safe_filename("com1", "fb", windows=True), "_com1")
+        self.assertEqual(safe_filename("...", "fb", windows=True), "fb")
+        self.assertEqual(safe_filename("name. ", "fb", windows=True), "name")
 
     def test_download_refuses_a_non_http_url(self) -> None:
         STATE.files["f1"] = {"id": "f1", "key": "k", "title": "x", "url": "file:///etc/passwd"}
