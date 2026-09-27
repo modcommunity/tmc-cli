@@ -9,6 +9,7 @@ today, without waiting for this tool to catch up.
 from __future__ import annotations
 
 import json
+import urllib.parse
 from typing import Any
 
 from ..context import Context
@@ -229,6 +230,17 @@ def open_item(ctx: Context) -> int:
     print(address)
 
     if args.browser:
+        # Only an absolute http(s) address goes to the browser. The anonymous
+        # summary's `url` is null whenever the site has no PUBLIC_URL, leaving a
+        # site-relative `path` that a browser launcher opens as a LOCAL file;
+        # and whatever scheme the record names (file:, a registered protocol
+        # handler, a leading "-" read as a browser option) the launcher obeys.
+        if urllib.parse.urlsplit(str(address)).scheme.lower() not in ("http", "https"):
+            raise UsageError(
+                f"Not opening '{address}' in a browser: it is not an absolute http(s) URL.",
+                hint="The site did not supply its full address for this item.",
+            )
+
         import webbrowser
 
         webbrowser.open(str(address))

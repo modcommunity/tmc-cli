@@ -1494,3 +1494,52 @@ class TrailingHelpTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIn("<operation>", out.getvalue())
+
+
+# ---- hostile server strings -------------------------------------------------
+
+
+class TestServerSuppliedStrings(CliTestCase):
+    """Strings from the site that must not act on the machine running tmc."""
+
+    def _mod(self, **fields) -> int:
+        row = {"id": STATE.take_id(), "name": "Seed Mod", "appId": 1, "hidden": False, **fields}
+        STATE.rows["mod"][row["id"]] = row
+
+        return row["id"]
+
+    def test_open_hands_only_absolute_http_urls_to_the_browser(self) -> None:
+        import webbrowser
+
+        # A site-relative path (the anonymous summary without PUBLIC_URL), a
+        # bare slug, a local file and an option-shaped string.
+        for address in ("/mod/3-seed", "seed-mod", "file:///etc/passwd", "--kiosk"):
+            mod_id = self._mod(url=address)
+
+            with mock.patch.object(webbrowser, "open") as opened:
+                self.run_cli("open", "mod", str(mod_id), "--browser", expect=2)
+
+            opened.assert_not_called()
+
+        mod_id = self._mod(url="https://moddingcommunity.com/seedgame/m/3-seed")
+
+        with mock.patch.object(webbrowser, "open") as opened:
+            self.run_cli("open", "mod", str(mod_id), "--browser")
+
+        opened.assert_called_once_with("https://moddingcommunity.com/seedgame/m/3-seed")
+
+    def test_table_output_neutralises_terminal_escapes(self) -> None:
+        # Retitle the window, then OSC 52 (set the clipboard).
+        hostile = "Nice\x1b]0;owned\x07 Mod\x1b]52;c;cm0gLXJmIH4K\x07\x9b2J"
+        self._mod(name=hostile)
+
+        table = self.run_cli("mod", "list")
+        yaml = self.run_cli("mod", "list", "-o", "yaml")
+
+        for text in (table, yaml):
+            self.assertNotIn("\x1b", text)
+            self.assertNotIn("\x07", text)
+            self.assertNotIn("\x9b", text)
+
+        self.assertIn("Nice", table)
+        self.assertIn("\\u001b", yaml)

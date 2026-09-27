@@ -90,9 +90,25 @@ def cell(value: Any, width: int = 48) -> str:
     else:
         text = str(value)
 
-    text = " ".join(text.split())
+    text = defang(" ".join(text.split()))
 
     return text if len(text) <= width else text[: width - 1] + "…"
+
+
+# C0 and C1 controls, bar the whitespace `split()` has already dealt with.
+_CONTROLS = {c: "\ufffd" for c in (*range(0x00, 0x20), *range(0x7F, 0xA0))}
+
+
+def defang(text: str) -> str:
+    """Neutralise control characters in text bound for a terminal.
+
+    A table shows other people's names and descriptions (every public item, on
+    `--anon`), and an ESC in one is not text to a terminal: it can retitle the
+    window, rewrite what was printed above it, or — on terminals that honour
+    OSC 52 — set the clipboard.
+    """
+
+    return text.translate(_CONTROLS)
 
 
 def _rows(payload: Any) -> list[dict[str, Any]]:
@@ -317,7 +333,14 @@ def _yaml_scalar(value: Any) -> str:
 
     text = str(value)
 
-    if text == "" or any(c in text for c in ":#\n\"'{}[]") or text.strip() != text:
+    # Control characters force the quoted form too: YAML forbids them in a
+    # plain scalar, and json.dumps escapes them rather than emitting them raw.
+    if (
+        text == ""
+        or any(c in text for c in ":#\n\"'{}[]")
+        or text.strip() != text
+        or text != defang(text)
+    ):
         return json.dumps(text)
 
     return text
