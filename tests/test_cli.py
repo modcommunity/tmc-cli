@@ -1543,3 +1543,29 @@ class TestServerSuppliedStrings(CliTestCase):
 
         self.assertIn("Nice", table)
         self.assertIn("\\u001b", yaml)
+
+
+class TestCleartextWarning(unittest.TestCase):
+    def _stderr(self, base_url: str, credential) -> str:
+        from tmc_cli.http import Transport
+
+        err = io.StringIO()
+
+        with redirect_stderr(err):
+            Transport(base_url, credential)
+
+        return err.getvalue()
+
+    def test_a_key_sent_over_plain_http_to_another_host_is_warned_about(self) -> None:
+        from tmc_cli.auth import AnonymousCredential, BearerCredential
+
+        key = BearerCredential("tmc_" + "a" * 32)
+
+        self.assertIn("unencrypted", self._stderr("http://moddingcommunity.com", key))
+        self.assertIn("unencrypted", self._stderr("http://192.168.1.20:3000", key))
+
+        for quiet in ("https://moddingcommunity.com", "http://127.0.0.1:3000",
+                      "http://localhost:3000", "http://[::1]:3000"):
+            self.assertEqual(self._stderr(quiet, key), "", quiet)
+
+        self.assertEqual(self._stderr("http://moddingcommunity.com", AnonymousCredential()), "")

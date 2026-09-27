@@ -229,6 +229,16 @@ class Transport:
         self.debug = debug
         self.dry_run = dry_run
 
+        if _cleartext_to_another_host(self.base_url) and credential.kind != "anonymous":
+            # Warned, not refused: a dev site on the LAN is a real use. But the
+            # header is on the wire before any https redirect could be issued
+            # (and redirects are not followed anyway), and a bearer secret read
+            # off the wire is good until it is revoked.
+            self._warn(
+                f"{self.base_url} is plain http — the credential is sent unencrypted. "
+                "Use https:// unless this is a trusted local network."
+            )
+
         context = ssl.create_default_context()
 
         if not verify_tls:
@@ -516,6 +526,27 @@ def _redact_authorization(value: str) -> str:
         return f"(redacted, {len(value)} chars)"
 
     return f"{scheme} {rest[:4]}… (redacted, {len(rest)} chars)"
+
+
+def _cleartext_to_another_host(base_url: str) -> bool:
+    """Whether requests to `base_url` leave this machine unencrypted."""
+
+    parts = urllib.parse.urlsplit(base_url)
+
+    if parts.scheme.lower() != "http":
+        return False
+
+    host = (parts.hostname or "").lower()
+
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+
+    try:
+        import ipaddress
+
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
