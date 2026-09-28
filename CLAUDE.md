@@ -20,9 +20,12 @@ src/tmc_cli/
   params.py            --set/--json → a typed JSON body
   output.py            table/json/csv/yaml rendering
   commands/            one module per surface
+                       (catalog_cmd: app API public reads; defcon_cmd: /status data)
 tests/
-  mock_server.py       in-memory stand-in for /api/content
+  mock_server.py       in-memory stand-in for /api/content (+ app API reads, defcon tRPC)
   test_cli.py          drives cli.main() against it over a real socket
+  test_contract.py     the published contract, offline
+  test_public.py       open, catalog, defcon — the surfaces that take no key
 ```
 
 ## The source of truth
@@ -98,6 +101,39 @@ other six canonical types also omit `ownerId` — and `stripOwner()` in
 `handler.ts` deletes it from the body before the schema sees it. Accepted and
 silently discarded is the one outcome not worth a flag.
 
+## The web version
+
+"The web version" is the **web console** at `/console` on the site
+(`src/lib/console/` + `src/types/console/` in website-city): the same `tmc`
+grammar, run as the signed-in session. The two are kept in step by the contract
+(`/api/content/spec`, `docs/api/cli-contract.md`), whose `commands` are
+`ConsoleSpec()`. This repo cannot change the console; a command added here shows
+up in `tmc contract drift` as "this build has, the site lacks" (non-failing)
+until the console grows it. `catalog` and `defcon` are in that state today —
+neither is CLI-only by nature, so they are deliberately NOT in `CLI_ONLY`.
+
+## Beyond /api/content
+
+Two more surfaces, both **keyless**, both through `Context.public_transport()`
+(an anonymous `Transport`; the profile's secret is never sent):
+
+- **`tmc catalog`** → `/api/app/v1/{browse,content/<kind>/<id>,facets,reviews,apps,servers/lookup}`
+  on the API origin. These routes are `auth: 'optional'`, but a `Bearer` that is
+  sent is resolved as an app token (`ResolveAppToken`) and a publishing (`CLI`)
+  credential is refused `403 wrong_credential` — so sending the profile's key
+  would break reads that need none. List params are REPEATED keys (`parseQuery` +
+  `normalizeArrayFields`), not the comma form `encode_params` uses for
+  `/api/content` — `catalog_cmd._get` builds its own query for that reason.
+  Errors are `{ok:false, error:{code,message}}`; `http.py` unwraps that and
+  tRPC's `{error:{json:{message,data:{code}}}}`.
+- **`tmc defcon`** → tRPC `defcon.public.{status,series,mtr}` (superjson:
+  `?input={"json":…}`, answer under `result.data.json`) on the **website
+  origin**: tRPC is refused on the API container (`SiteSurfaceRefusal`).
+  `config.site_url()` picks the origin: `--site-url` > `TMC_SITE_URL` > profile
+  option `site_url` > base URL minus `api.`. Only the public procedures —
+  never `defcon.admin.*`. The site's `show.nodes` / `show.incidents` switches
+  are honoured even though `status` sends node rows regardless.
+
 ## Behaviours that exist for a specific reason
 
 Change these only with the reason in hand:
@@ -172,6 +208,22 @@ than against itself.
 
 ## Known gaps
 
+- **Per-user app API** (`/api/app/v1` friends, parties, presence, installs,
+  subscriptions, downloads, writing reviews, `stats/me`) takes an app-user token
+  from the device flow (`auth/device` → `auth/token`, `tmca_…`), not a content
+  key. Same shape of gap as the integration API below: a credential kind, not a
+  command module. Leaderboards (`stats/top`) are game-scoped (`allowGame`) and
+  need that token or a game's.
+- **Defcon incident history is not public.** `defcon.public.status` carries only
+  OPEN alerts (max 20). A history needs a new public procedure (or REST route)
+  in website-city returning resolved `DefconAlert` rows for public+enabled
+  monitors: `{id, createdAt, resolvedAt, status, monitorName, nodeName,
+  message}`, cursor-paged, gated on `defcon.statusPublic` and
+  `defcon.statusShowIncidents`, node named by `displayName ?? location` (never
+  `host`), 90-day cap. Then `tmc defcon incidents --all`.
+- **Defcon has no REST route**; tRPC on the site origin is the only way in. A
+  cacheable `GET /api/status/defcon` (same body as `defcon.public.status`,
+  served on the API origin too) would remove the `--site-url` dependency.
 - `/api/content/server/integration/{stats,users}` sit under `/api/content` but
   belong to the **integration API** (`docs/api/integration-api.md`): a separate
   credential namespace (`tmci_`), scoped per-server, with its own scopes

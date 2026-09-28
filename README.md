@@ -96,8 +96,16 @@ tmc mod list --search rust --tag pvp -o json
 tmc mod get 42
 tmc mod update 42 --set description="Now with fewer bugs"
 tmc mod delete 42
-tmc open mod 42                                 # its page on the site
+tmc open mod 42 --browser                       # its page on the site
 ```
+
+`open` prints the page's full address and, with `--browser`, opens it. The
+address is the site's own where it gives one; otherwise it is built from the
+record (a keyed record's `url` field is its slug, not a page). Comments,
+reviews, media and releases go through the site's `/i/<type>/<id>` permalink.
+Relative addresses are resolved against the **website** origin: `--site-url`,
+`TMC_SITE_URL`, a profile's `site_url` option, or the base URL minus a leading
+`api.` (`api.moddingcommunity.com` → `moddingcommunity.com`).
 
 `ls` is an alias for `list`, and `get` with no id lists as well, so whichever of
 the three you reach for first is the one that works. `help` after a command is
@@ -293,6 +301,50 @@ console** at `/console` on the site, and in the corner of every page. It runs as
 your signed-in session rather than as a key, so there is nothing to log into —
 and it is the thing the contract keeps this tool in step with.
 
+## The public catalogue
+
+`tmc catalog` reads what a visitor sees, from the app API's public half
+(`/api/app/v1`). It sends **no credential** — so it works before `tmc auth
+login` — and it covers what the content API does not hand out: categories,
+tags, owners, download/rating counts, dependencies, reviews, the games list.
+
+```bash
+tmc catalog browse mod --app 3 --category 7 --tag 1 --tag 2 --sort downloads
+tmc catalog browse server --filter onlineOnly=true --filter os=LINUX --all --max 200
+tmc catalog show mod 42                          # summary + counts
+tmc catalog show mod 42 --part dependencies      # or releases, media, links
+tmc catalog facets mod                           # game/category ids to filter by
+tmc catalog reviews mod 42 --sort helpful
+tmc catalog games --search seed
+tmc catalog lookup play.example.com --port 27015 # listed servers at an address
+```
+
+Kinds are the app API's: `asset mod server serverMap article community
+collection user`. Ids on this surface are strings.
+
+## Network status (Defcon)
+
+`tmc defcon` reads the public half of Defcon, the network monitor — exactly
+what the site's `/status` page shows, from the same tRPC procedures
+(`defcon.public.status|series|mtr`). No credential; asked of the website
+origin (see `open` above), since tRPC is not served on the API one.
+
+```bash
+tmc defcon status                # overall verdict, counts, open incidents
+tmc defcon status --check        # exit 0 OK · 1 DEGRADED · 2 DOWN · 3 UNKNOWN
+tmc defcon monitors --status DOWN --status DEGRADED
+tmc defcon monitor homepage      # by id or (part of) name: per-node latency now
+tmc defcon nodes                 # monitoring nodes, when the site publishes them
+tmc defcon incidents             # open incidents
+tmc defcon latency 3 --range week --summary   # per node: latest, mean, peak ms
+tmc defcon latency 3 --range day --node frankfurt -o csv
+tmc defcon mtr 5                 # latest traceroute of an MTR monitor
+```
+
+The site's own switches are honoured: when the status page hides nodes or
+incidents, so does this. Resolved incidents are not public, so there is no
+incident history here.
+
 ## Shell completion
 
 ```bash
@@ -307,10 +359,11 @@ tmc completion fish > ~/.config/fish/completions/tmc.fish
 python -m unittest discover -s tests
 ```
 
-85 tests run the real CLI against an in-process mock of the API over a real
+The tests run the real CLI against an in-process mock of the API over a real
 socket, covering both auth modes (including Ed25519 against RFC 8032 vectors and
 an openssl-generated key), the anonymous surface, batching, relation
-merge/replace semantics, the release workflow and the retry path.
+merge/replace semantics, the release workflow, the retry path, `open`, the
+public catalogue and Defcon (`tests/test_public.py`).
 
 ## Which address it talks to
 
@@ -334,3 +387,9 @@ them.
 The API this speaks to is documented in the website repo at
 `docs/api/public-content-api.md`; the implementation is under
 `src/lib/api/public/`.
+
+`tmc catalog` speaks to the app API's public reads (`src/app/api/app/v1/`,
+query and response shapes in `src/types/app-api/contract.ts`); `tmc defcon` to
+`src/server/api/routers/defcon/public.ts`, described in `docs/defcon.md`. The
+command grammar the web console shares with this tool is published at
+`/api/content/spec` (`docs/api/cli-contract.md`).
