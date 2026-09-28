@@ -469,7 +469,10 @@ def site_url(args: Any, base_url: str) -> str:
     host = parts.hostname or ""
 
     if host.startswith("api.") and host.count(".") >= 2:
-        netloc = parts.netloc.replace(host, host[len("api."):], 1)
-        return urllib.parse.urlunsplit((parts.scheme, netloc, "", "", "")).rstrip("/")
+        # Rebuilt from the parsed host and port alone: a string replace on the
+        # netloc could hit userinfo instead of the host, and userinfo has no
+        # business travelling to the site origin anyway.
+        netloc = host[len("api."):] + (f":{parts.port}" if parts.port else "")
+        return urllib.parse.urlunsplit((parts.scheme, netloc, "", "", ""))
 
     return base_url.rstrip("/")

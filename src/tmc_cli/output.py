@@ -49,19 +49,29 @@ def paint(text: str, *styles: str, stream: Any = None) -> str:
     return f"{prefix}{text}{_ANSI['reset']}" if prefix else text
 
 
+def _plain(message: str) -> str:
+    """Defang each line of a status message; server text often ends up in one."""
+
+    return "\n".join(defang(line) for line in str(message).split("\n"))
+
+
 def info(message: str) -> None:
+    message = _plain(message)
     print(paint(message, "dim", stream=sys.stderr), file=sys.stderr)
 
 
 def success(message: str) -> None:
+    message = _plain(message)
     print(paint(message, "green", stream=sys.stderr), file=sys.stderr)
 
 
 def warn(message: str) -> None:
+    message = _plain(message)
     print(paint(f"warning: {message}", "yellow", stream=sys.stderr), file=sys.stderr)
 
 
 def error(message: str) -> None:
+    message = _plain(message)
     print(paint(message, "red", stream=sys.stderr), file=sys.stderr)
 
 

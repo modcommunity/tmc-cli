@@ -36,6 +36,13 @@ class TestSiteUrl(unittest.TestCase):
             )
             self.assertEqual(site_url(_Args(), "http://localhost:3000"), "http://localhost:3000")
 
+    def test_userinfo_is_dropped_and_port_kept(self) -> None:
+        with mock.patch.dict(os.environ, {"TMC_SITE_URL": ""}):
+            self.assertEqual(
+                site_url(_Args(), "https://api.example.com@api.example.com:8443/x"),
+                "https://example.com:8443",
+            )
+
     def test_env_wins(self) -> None:
         with mock.patch.dict(os.environ, {"TMC_SITE_URL": "https://staging.example/"}):
             self.assertEqual(site_url(_Args(), "https://api.x.com"), "https://staging.example")
@@ -166,6 +173,20 @@ class TestDefcon(CliTestCase):
         STATE.defcon = {"enabled": False, "show": {}, "overall": "UNKNOWN", "nodes": [], "monitors": [], "openAlerts": []}
         err = self.run_cli_err("defcon", "monitors", expect=2)
         self.assertIn("does not publish", err)
+        # Under --check a non-answer is UNKNOWN, never DOWN (2) or DEGRADED (1).
+        self.run_cli("defcon", "status", "--check", expect=3)
+
+    def test_check_down_and_unreachable(self) -> None:
+        STATE.defcon["overall"] = "DOWN"
+        self.run_cli("defcon", "status", "--check", expect=2)
+        self.run_cli("defcon", "status", "--check", "--site-url", "http://127.0.0.1:9", expect=3)
+
+    def test_error_text_is_defanged(self) -> None:
+        for m in STATE.defcon["monitors"][:2]:
+            m["name"] = "zzq\x1b]0;pwned\x07" + str(m["id"])
+        err = self.run_cli_err("defcon", "monitor", "zzq", expect=2)
+        self.assertIn("matches 2 monitors", err)
+        self.assertNotIn("\x1b", err)
 
     def test_latency_series_and_summary(self) -> None:
         rows = self.run_cli("defcon", "latency", "Homepage", "--range", "week", "--node", "frankfurt", "-o", "csv")

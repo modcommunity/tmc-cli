@@ -22,6 +22,12 @@ from contextlib import redirect_stderr, redirect_stdout
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# The shell's own TMC_* settings must not reach the suite: TMC_SITE_URL (or
+# TMC_BASE_URL, TMC_TOKEN, TMC_PROFILE) would aim `open` and `defcon` at the
+# live site instead of the mock.
+for _name in [n for n in os.environ if n.startswith("TMC_")]:
+    del os.environ[_name]
+
 from mock_server import BEARER_TOKEN, STATE, MockServer  # noqa: E402
 
 from tmc_cli import cli  # noqa: E402

@@ -20,6 +20,9 @@ import tempfile
 import time
 import unittest
 
+for _name in [n for n in os.environ if n.startswith("TMC_")]:
+    del os.environ[_name]
+
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 )

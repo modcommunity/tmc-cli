@@ -34,8 +34,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .. import output
 from ..context import Context
-from ..errors import ApiError, UsageError
+from ..errors import ApiError, CliError, UsageError
 
 class _DryRun(Exception):
     """Raised past a --dry-run fetch; `run` turns it into a clean exit."""
@@ -158,6 +159,24 @@ def run(handler: Any) -> Any:
 
 
 def status(ctx: Context) -> int:
+    if not ctx.args.check:
+        return _status_cmd(ctx)
+
+    # Under --check the exit code IS the verdict, so a failure to get one must
+    # not land on 1 or 2 (a usage error, a bad --site-url, an unpublished page)
+    # and read as DEGRADED or DOWN. Anything that is not an answer is UNKNOWN.
+    try:
+        return _status_cmd(ctx)
+    except CliError as err:
+        output.error(f"error: {err.message}")
+
+        if err.hint:
+            output.error(f"  → {err.hint}")
+
+        return CHECK_EXIT["UNKNOWN"]
+
+
+def _status_cmd(ctx: Context) -> int:
     doc = _status(ctx)
 
     if doc is None:

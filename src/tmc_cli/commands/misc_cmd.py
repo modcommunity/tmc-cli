@@ -213,7 +213,10 @@ PERMALINK_TYPES = ("comment", "review", "media", "release")
 
 
 def _is_absolute(address: Any) -> bool:
-    return urllib.parse.urlsplit(str(address)).scheme.lower() in ("http", "https")
+    parts = urllib.parse.urlsplit(str(address))
+
+    # A host is required too: `https:foo` has the scheme and no address.
+    return parts.scheme.lower() in ("http", "https") and bool(parts.hostname)
 
 
 def _built_path(type_name: str, item_id: int, row: dict[str, Any]) -> str | None:
