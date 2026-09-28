@@ -1511,15 +1511,26 @@ class TestServerSuppliedStrings(CliTestCase):
     def test_open_hands_only_absolute_http_urls_to_the_browser(self) -> None:
         import webbrowser
 
-        # A site-relative path (the anonymous summary without PUBLIC_URL), a
-        # bare slug, a local file and an option-shaped string.
+        # A keyed record's `url` is its SLUG, so whatever it holds — a path, a
+        # bare slug, a local file, an option-shaped string — ends up as a PATH
+        # under the site's origin, never as the address itself.
         for address in ("/mod/3-seed", "seed-mod", "file:///etc/passwd", "--kiosk"):
             mod_id = self._mod(url=address)
 
             with mock.patch.object(webbrowser, "open") as opened:
-                self.run_cli("open", "mod", str(mod_id), "--browser", expect=2)
+                self.run_cli("open", "mod", str(mod_id), "--browser")
 
-            opened.assert_not_called()
+            opened.assert_called_once()
+            self.assertTrue(opened.call_args[0][0].startswith(self.server.base_url + "/"))
+
+        # Something that is not a URL at all never reaches the launcher.
+        mod_id = self._mod(url="x", hidden=True, appId=None)
+        STATE.rows["mod"][mod_id].pop("appId")
+
+        with mock.patch.object(webbrowser, "open") as opened:
+            self.run_cli("open", "mod", str(mod_id), "--browser", expect=2)
+
+        opened.assert_not_called()
 
         mod_id = self._mod(url="https://moddingcommunity.com/seedgame/m/3-seed")
 

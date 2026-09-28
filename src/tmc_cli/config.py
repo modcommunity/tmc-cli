@@ -434,3 +434,42 @@ def _resolve_credential(
             "TMC_TOKEN also works."
         ),
     )
+
+
+def site_url(args: Any, base_url: str) -> str:
+    """The WEBSITE's origin, as opposed to the API's.
+
+    Two things live only on the site: the pages `tmc open` sends a browser to,
+    and tRPC — which the API container refuses outright (`SiteSurfaceRefusal`
+    in website-city), so `tmc defcon` cannot ask the API origin for the status
+    page's data even though the route has the same name on both.
+
+    Flag, then `TMC_SITE_URL`, then the profile's `site_url` option, then a
+    guess from the base URL: `https://api.example.com` → `https://example.com`.
+    Anything that is not an `api.` host is taken to BE the site, which is what a
+    dev checkout or a bare container is — one origin answering both.
+    """
+
+    explicit = getattr(args, "site_url", None) or _env("SITE_URL")
+
+    if not explicit:
+        config = Config.load()
+        name = getattr(args, "profile", None) or _env("PROFILE") or config.default_profile
+        profile = config.profiles.get(name)
+
+        if profile:
+            explicit = profile.options.get("site_url")
+
+    if explicit:
+        return str(explicit).rstrip("/")
+
+    import urllib.parse
+
+    parts = urllib.parse.urlsplit(base_url.rstrip("/"))
+    host = parts.hostname or ""
+
+    if host.startswith("api.") and host.count(".") >= 2:
+        netloc = parts.netloc.replace(host, host[len("api."):], 1)
+        return urllib.parse.urlunsplit((parts.scheme, netloc, "", "", "")).rstrip("/")
+
+    return base_url.rstrip("/")

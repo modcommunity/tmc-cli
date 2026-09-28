@@ -13,7 +13,7 @@ import sys
 from typing import Any, Sequence
 
 from .client import ContentClient
-from .config import Settings, resolve
+from .config import Settings, resolve, resolve_unkeyed, site_url
 from .http import Transport
 from . import output
 
@@ -54,6 +54,36 @@ class Context:
         return self._client
 
     # -- output --------------------------------------------------------------
+
+    def public_transport(self, *, site: bool = False) -> Transport:
+        """A transport that sends NO credential, for the surfaces that take none.
+
+        The app API's public reads and the status page's tRPC procedures are
+        anonymous by design, and presenting a content key to either is at best
+        ignored and at worst a 401 (the app API reads any `Bearer` as ITS token
+        kind). So these commands never touch the profile's secret — which also
+        means they work before `tmc auth login`.
+
+        `site=True` aims it at the website origin rather than the API one; see
+        `config.site_url` for why tRPC has to go there.
+        """
+
+        settings = resolve_unkeyed(self.args)
+        base = self.site_url(settings.base_url) if site else settings.base_url
+
+        return Transport(
+            base,
+            settings.credential,
+            timeout=settings.timeout,
+            retries=settings.retries,
+            retry_wait_max=settings.retry_wait_max,
+            verify_tls=settings.verify_tls,
+            debug=settings.debug,
+            dry_run=settings.dry_run,
+        )
+
+    def site_url(self, base_url: str | None = None) -> str:
+        return site_url(self.args, base_url or resolve_unkeyed(self.args).base_url)
 
     @property
     def quiet(self) -> bool:

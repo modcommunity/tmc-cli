@@ -387,6 +387,20 @@ class Transport:
             data = None
             code = None
 
+            # The content API says `{"error": "text"}`. The app API nests it —
+            # `{"ok": false, "error": {"code", "message"}}` — and tRPC nests it
+            # once more under its transformer, `{"error": {"json": {...}}}`.
+            # Printing the dict would be a Python repr on the user's terminal.
+            nested = parsed.get("error") if isinstance(parsed, dict) else None
+
+            if isinstance(nested, dict):
+                inner = nested.get("json") if isinstance(nested.get("json"), dict) else nested
+                inner_data = inner.get("data") if isinstance(inner.get("data"), dict) else {}
+                parsed = {
+                    "error": inner.get("message") or message,
+                    "code": inner.get("code") if isinstance(inner.get("code"), str) else inner_data.get("code"),
+                }
+
             if isinstance(parsed, dict):
                 message = str(parsed.get("error") or message)
                 issues = parsed.get("issues")
