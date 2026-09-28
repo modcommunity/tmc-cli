@@ -78,6 +78,52 @@ ANON_LIST_NOTE = (
 )
 
 
+def default_defcon() -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "show": {"nodes": True, "incidents": True, "mtr": True},
+        "overall": "DEGRADED",
+        "nodes": [
+            {"id": 1, "name": "Frankfurt", "location": "DE", "status": "OK", "lastSeen": "2026-09-27T11:00:00Z", "down": False},
+            {"id": 2, "name": "Sydney", "location": "AU", "status": "DEGRADED", "lastSeen": "2026-09-27T11:00:00Z", "down": False},
+        ],
+        "monitors": [
+            {"id": 1, "name": "Homepage", "kind": "WEB", "target": "example.com/", "status": "DEGRADED",
+             "nodes": [
+                 {"nodeId": 1, "status": "OK", "lastValueMs": 44.0, "lastLossPct": None, "since": "2026-09-27T09:00:00Z"},
+                 {"nodeId": 2, "status": "DEGRADED", "lastValueMs": 820.5, "lastLossPct": None, "since": "2026-09-27T10:30:00Z"},
+             ],
+             "uptime": {"day": 99.5, "week": 99.9, "month": 99.95}, "dayAvgMs": 80.2},
+            {"id": 2, "name": "API", "kind": "TCP", "target": "api.example.com:443", "status": "OK",
+             "nodes": [], "uptime": {"day": 100, "week": 100, "month": 100}, "dayAvgMs": 12.0},
+            {"id": 3, "name": "Route to EU", "kind": "MTR", "target": "example.com", "status": "OK",
+             "nodes": [], "uptime": {"day": None, "week": None, "month": None}, "dayAvgMs": None},
+        ],
+        "openAlerts": [
+            {"id": 40, "createdAt": "2026-09-27T10:30:00Z", "status": "DEGRADED", "monitorName": "Homepage", "nodeName": "Sydney", "message": "820 ms > 500 ms"},
+        ],
+    }
+
+
+def app_summary(n: int) -> dict[str, Any]:
+    """A `ContentSummarySchema` row. Ids are STRINGS on this surface."""
+
+    kind = "server" if n == 5 else "mod"
+
+    return {
+        "kind": kind, "id": str(n), "url": None, "name": f"Item {n}", "description": None,
+        "images": {"card": None, "banner": None, "icon": None},
+        "app": {"id": 1, "name": "Seed", "url": "seed", "icon": None},
+        "owner": {"id": "u1", "name": "Ann", "username": "ann", "avatar": None},
+        "community": None,
+        "categories": [{"id": 7, "name": "Maps", "url": None}],
+        "tags": [{"id": 1, "name": "fun", "url": None}] + ([{"id": 2, "name": "pvp", "url": None}] if n % 2 else []),
+        "createdAt": "2026-01-01", "updatedAt": None, "nsfw": False, "archived": False, "isOfficial": False,
+        "stats": {"views": 1, "downloads": 10 * n, "favorites": 0, "comments": 0, "reviews": 1, "likes": 0, "rating": 4.5},
+        "server": None, "webUrl": f"https://example.com/seed/m/{n}",
+    }
+
+
 class State:
     """Everything the mock remembers, resettable between tests."""
 
@@ -106,6 +152,27 @@ class State:
         self.can_read = True
         self.can_write = True
         self.can_delete = True
+        #: `defcon.public.status` as the site computes it (`GetDefconPublicStatus`).
+        self.defcon = default_defcon()
+        #: `defcon.public.series` per monitor id, and `defcon.public.mtr`.
+        self.defcon_series: dict[int, dict[str, Any]] = {
+            1: {
+                "points": [
+                    {"ts": "2026-09-27T10:00:00Z", "nodeId": 1, "avg": 40.0, "max": 55.0, "okPct": 100, "lossPct": None, "samples": 12},
+                    {"ts": "2026-09-27T11:00:00Z", "nodeId": 1, "avg": 44.0, "max": 90.0, "okPct": 100, "lossPct": None, "samples": 12},
+                    {"ts": "2026-09-27T10:00:00Z", "nodeId": 2, "avg": 120.0, "max": 130.0, "okPct": 100, "lossPct": None, "samples": 12},
+                ],
+                "buckets": ["2026-09-27T10:00:00Z", "2026-09-27T11:00:00Z"],
+                "nodes": [{"id": 1, "name": "Frankfurt"}, {"id": 2, "name": "Sydney"}],
+            }
+        }
+        self.defcon_mtr: dict[int, list[Any]] = {
+            3: [{"nodeId": 1, "ts": "2026-09-27T11:00:00Z", "hops": [
+                {"hop": 1, "addr": "10.0.0.1", "name": "gw", "sent": 10, "recv": 10, "lossPct": 0, "bestMs": 1, "avgMs": 1.2, "worstMs": 2, "stdevMs": 0.1},
+            ]}]
+        }
+        #: The app API's public reads, keyed by what they answer for.
+        self.catalog_items = [app_summary(n) for n in range(1, 6)]
 
     def take_id(self) -> int:
         value = self.next_id
@@ -266,6 +333,22 @@ class Handler(BaseHTTPRequestHandler):
             self._error(429, "Rate limit exceeded. Try again in 1s.")
             return
 
+        # The app API and tRPC: public reads, answered only WITHOUT a credential
+        # — a content key sent to the app API is refused as the wrong credential,
+        # which is exactly what `tmc catalog` must avoid.
+        if parts[:3] == ["api", "app", "v1"] or parts[:2] == ["api", "trpc"]:
+            self._read_body()
+
+            if self.headers.get("Authorization"):
+                self._json(403, {"ok": False, "error": {"code": "wrong_credential", "message": "This endpoint cannot be called with a publishing credential."}})
+                return
+
+            if parts[1] == "trpc":
+                self._trpc(parts[2] if len(parts) > 2 else "", parsed.query)
+            else:
+                self._app_api(parts[3:], parse_qs(parsed.query))
+            return
+
         # A GET with NO Authorization header at all is the unauthenticated
         # surface's, and it is branched to BEFORE auth — a request presenting a
         # credential, even a bad one, is never downgraded into an anonymous read.
@@ -312,6 +395,99 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._read_body()
             self._error(404, "Not found.")
+
+    # -- tRPC (defcon.public.*) and the app API ------------------------------
+
+    def _trpc(self, procedure: str, raw_query: str) -> None:
+        query = parse_qs(raw_query)
+        payload = json.loads(query["input"][0])["json"] if "input" in query else None
+
+        def ok(value: Any) -> None:
+            self._json(200, {"result": {"data": {"json": value}}})
+
+        if procedure == "defcon.public.status":
+            return ok(STATE.defcon)
+
+        if procedure == "defcon.public.series":
+            if payload.get("range") not in (None, "day", "week", "month", "year", "all"):
+                return self._json(400, {"error": {"json": {"message": "Invalid input", "data": {"code": "BAD_REQUEST"}}}})
+
+            return ok(STATE.defcon_series.get(payload["monitorId"], {"points": [], "buckets": [], "nodes": []}))
+
+        if procedure == "defcon.public.mtr":
+            return ok(STATE.defcon_mtr.get(payload["monitorId"], []))
+
+        self._json(404, {"error": {"json": {"message": f'No "query"-procedure on path "{procedure}"', "data": {"code": "NOT_FOUND"}}}})
+
+    def _app_api(self, rest: list[str], query: dict[str, list[str]]) -> None:
+        def ok(data: Any) -> None:
+            self._json(200, {"ok": True, "data": data})
+
+        def one(key: str) -> str | None:
+            return query.get(key, [None])[-1]
+
+        route = "/".join(rest)
+
+        if route == "browse":
+            # Repeated keys, never commas: the real `parseQuery` would take
+            # "1,2" as one string and the schema would refuse it.
+            if any("," in v for values in query.values() for v in values):
+                return self._json(400, {"ok": False, "error": {"code": "BAD_REQUEST", "message": "Expected number, received string"}})
+
+            items = [i for i in STATE.catalog_items if i["kind"] == one("kind")]
+
+            if "tags" in query:
+                wanted = {int(t) for t in query["tags"]}
+                items = [i for i in items if wanted <= {t["id"] for t in i["tags"]}]
+
+            limit = int(one("limit") or 30)
+            start = int(one("cursor") or 0)
+            page = items[start:start + limit]
+            nxt = str(start + limit) if start + limit < len(items) else None
+
+            return ok({"items": page, "nextCursor": nxt, "total": len(items)})
+
+        if len(rest) == 3 and rest[0] == "content":
+            for item in STATE.catalog_items:
+                if item["kind"] == rest[1] and item["id"] == rest[2]:
+                    return ok({
+                        "summary": item,
+                        "content": "body",
+                        "rules": None,
+                        "releases": [{"id": 9, "version": "1.0", "createdAt": "2026-01-01", "files": [{"id": "f", "title": None, "size": 3, "url": "u"}]}],
+                        "media": [],
+                        "links": [],
+                        "dependencies": [{"relation": "REQUIRED", "note": None, "kind": "mod", "id": 2, "name": "Lib", "icon": None}],
+                    })
+
+            return self._json(404, {"ok": False, "error": {"code": "NOT_FOUND", "message": "Not found."}})
+
+        if route == "facets":
+            return ok({
+                "apps": [{"id": 1, "name": "Seed", "url": "seed", "count": 5, "icon": None}],
+                "categories": [{"id": 7, "name": "Maps", "url": None, "count": 2, "parentId": None}],
+                "countries": [],
+            })
+
+        if route == "reviews":
+            return ok({
+                "reviews": [{"id": 1, "owner": {"id": "u1", "name": "Ann", "username": "ann", "avatar": None}, "rating": 5, "content": "great", "createdAt": "2026-01-01", "lastEdit": None, "score": 2, "mine": False, "myVote": None}],
+                "nextCursor": None,
+                "breakdown": {"one": 0, "two": 0, "three": 0, "four": 0, "five": 1},
+                "average": 5,
+                "total": 1,
+            })
+
+        if route == "apps":
+            return ok({"apps": [{"id": 1, "name": "Seed", "slug": "seed", "type": "GAME", "isOfficial": True, "hasServers": True, "webUrl": "https://x/seed"}], "nextCursor": None, "total": 1, "playEnabled": True})
+
+        if route == "servers/lookup":
+            if not one("host"):
+                return self._json(400, {"ok": False, "error": {"code": "BAD_REQUEST", "message": "host is required"}})
+
+            return ok({"servers": [i for i in STATE.catalog_items if i["kind"] == "server"]})
+
+        self._json(404, {"ok": False, "error": {"code": "NOT_FOUND", "message": "Not found."}})
 
     # -- the unauthenticated surface -----------------------------------------
 

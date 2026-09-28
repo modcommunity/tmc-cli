@@ -24,8 +24,10 @@ from . import contract, output
 from .context import Context
 from .commands import (
     auth_cmd,
+    catalog_cmd,
     content_cmd,
     contract_cmd,
+    defcon_cmd,
     file_cmd,
     misc_cmd,
     relation_cmd,
@@ -74,6 +76,14 @@ def _add_connection_flags(parser: argparse.ArgumentParser, *, leaf: bool) -> Non
     )
     group.add_argument(
         "--base-url", default=default, help="API root, e.g. https://api.moddingcommunity.com"
+    )
+    group.add_argument(
+        "--site-url",
+        default=default,
+        help=(
+            "the WEBSITE origin, for 'open' and 'defcon' (default: TMC_SITE_URL, "
+            "else the base URL minus a leading 'api.')"
+        ),
     )
     group.add_argument("--token", default=default, help="bearer token (overrides the profile)")
     group.add_argument("--key-id", default=default, help="JWT key id (tmcak_…)")
@@ -342,6 +352,8 @@ def build_parser() -> argparse.ArgumentParser:
     _build_files(sub)
     _build_releases(sub)
     _build_misc(sub)
+    _build_catalog(sub)
+    _build_defcon(sub)
 
     return parser
 
@@ -743,9 +755,10 @@ def _build_misc(sub: Any) -> None:
         "print (or open) an item's page on the site",
         misc_cmd.open_item,
         epilog=(
-            "The address is read off the item, not built from its id: a mod "
-            "lives under its app, so the app segment and the slug both come "
-            "from the record."
+            "The address is the site's own where it gives one (the anonymous "
+            "summary's url/path), else built from the record: a keyed record's "
+            "'url' is its SLUG, not a page. Relative addresses are made absolute "
+            "against --site-url."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -757,6 +770,115 @@ def _build_misc(sub: Any) -> None:
 
     completion = _leaf(sub, "completion", "print a shell completion script", misc_cmd.completion)
     completion.add_argument("shell", choices=("bash", "zsh", "fish"))
+
+
+def _build_catalog(sub: Any) -> None:
+    catalog = sub.add_parser(
+        "catalog",
+        help="the site's public catalogue (app API reads; no key sent)",
+        description=(
+            "What a visitor sees: browse with categories/tags/owner/stats, an item's "
+            "releases, media, links and dependencies, its reviews, filter facets, the "
+            "games list, and servers by address. Served by /api/app/v1 with no "
+            "credential — works before 'tmc auth login'."
+        ),
+    )
+    ops = catalog.add_subparsers(dest="catalog_op", metavar="<op>", required=True)
+    kinds = catalog_cmd.KINDS
+
+    def paging(parser: argparse.ArgumentParser, default_limit: int | None = None) -> None:
+        parser.add_argument("--limit", type=int, default=default_limit, help="page size")
+        parser.add_argument("--cursor", help="resume from a previous page's cursor")
+        parser.add_argument("--all", action="store_true", help="follow the cursor to the end")
+        parser.add_argument("--max", type=int, help="stop after this many rows (with --all)")
+
+    browse = _leaf(ops, "browse", "search and filter one kind", catalog_cmd.browse)
+    browse.add_argument("kind", choices=kinds)
+    browse.add_argument("--search", "-s")
+    browse.add_argument("--app", type=int, action="append", help="game id (repeatable)")
+    browse.add_argument("--category", type=int, action="append", help="category id (repeatable)")
+    browse.add_argument("--tag", type=int, action="append", help="tag id (repeatable; all must match)")
+    browse.add_argument("--any-tag", action="store_true", help="match ANY of the --tag ids")
+    browse.add_argument("--community", type=int, help="community id")
+    browse.add_argument("--owner", help="owner user id")
+    browse.add_argument("--nsfw", action="store_true", default=None, help="include NSFW items")
+    browse.add_argument("--official", action="store_true", help="official items only")
+    browse.add_argument("--sort", choices=catalog_cmd.SORTS)
+    browse.add_argument("--dir", choices=("asc", "desc"))
+    browse.add_argument("--time-range", choices=catalog_cmd.TIME_RANGES)
+    browse.add_argument(
+        "--filter", action="append", metavar="K=V",
+        help="any other BrowseQuery field, e.g. onlineOnly=true, os=LINUX (repeatable)",
+    )
+    paging(browse)
+
+    show = _leaf(ops, "show", "one item as the site renders it", catalog_cmd.show)
+    show.add_argument("kind", choices=kinds)
+    show.add_argument("id", type=int)
+    show.add_argument(
+        "--part", choices=("releases", "media", "links", "dependencies"),
+        help="list just this part of the item",
+    )
+
+    facets = _leaf(ops, "facets", "the games, categories and countries to filter a kind by", catalog_cmd.facets)
+    facets.add_argument("kind", choices=kinds)
+
+    reviews = _leaf(ops, "reviews", "an item's reviews", catalog_cmd.reviews)
+    reviews.add_argument("kind", choices=kinds)
+    reviews.add_argument("id", type=int)
+    reviews.add_argument("--sort", choices=("recent", "helpful", "rating"))
+    paging(reviews)
+
+    games = _leaf(ops, "games", "the games catalogue", catalog_cmd.games)
+    games.add_argument("--search", "-s")
+    games.add_argument("--type", choices=catalog_cmd.APP_TYPES)
+    games.add_argument("--playable", action="store_true", help="only games playable on the site")
+    games.add_argument("--ids", type=int, action="append", help="game id (repeatable)")
+    games.add_argument("--slug", action="append", help="game slug (repeatable)")
+    paging(games)
+
+    lookup = _leaf(ops, "lookup", "listed servers at an address", catalog_cmd.lookup)
+    lookup.add_argument("host", help="hostname or IP")
+    lookup.add_argument("--port", type=int)
+
+
+def _build_defcon(sub: Any) -> None:
+    defcon = sub.add_parser(
+        "defcon",
+        help="the public network status (Defcon, as on /status)",
+        description=(
+            "Read-only, public data only: exactly what the site's /status page shows. "
+            "Asked of the WEBSITE origin (--site-url), since tRPC is not served on "
+            "the API one. No credential is sent."
+        ),
+    )
+    ops = defcon.add_subparsers(dest="defcon_op", metavar="<op>", required=True)
+    run = defcon_cmd.run
+
+    status = _leaf(ops, "status", "overall verdict and counts", run(defcon_cmd.status))
+    status.add_argument(
+        "--check", action="store_true",
+        help="exit 0 OK, 1 DEGRADED, 2 DOWN, 3 UNKNOWN (for scripts and cron)",
+    )
+
+    monitors = _leaf(ops, "monitors", "every public monitor: status, 24h latency, uptime", run(defcon_cmd.monitors))
+    monitors.add_argument("--status", action="append", choices=defcon_cmd.STATUS_ORDER, help="only these (repeatable)")
+    monitors.add_argument("--kind", type=str.upper, choices=("WEB", "TCP", "ICMP", "MTR", "BROWSER"))
+
+    monitor = _leaf(ops, "monitor", "one monitor's current reading from each node", run(defcon_cmd.monitor))
+    monitor.add_argument("monitor", help="id, or (part of) its name")
+
+    _leaf(ops, "nodes", "the monitoring nodes and their status", run(defcon_cmd.nodes))
+    _leaf(ops, "incidents", "open incidents (resolved ones are not public)", run(defcon_cmd.incidents))
+
+    latency = _leaf(ops, "latency", "a monitor's latency history, per node", run(defcon_cmd.latency))
+    latency.add_argument("monitor", help="id, or (part of) its name")
+    latency.add_argument("--range", choices=defcon_cmd.RANGES, default="day")
+    latency.add_argument("--node", help="one node, by id or name")
+    latency.add_argument("--summary", action="store_true", help="per node: latest, mean and peak")
+
+    mtr = _leaf(ops, "mtr", "an MTR monitor's latest traceroute", run(defcon_cmd.mtr))
+    mtr.add_argument("monitor", help="id, or (part of) its name")
 
 
 def local_command_paths() -> set[tuple[str, ...]]:
@@ -796,7 +918,7 @@ def top_level_commands() -> list[str]:
 
     return sorted(
         list(TOP_LEVEL_TYPES)
-        + ["auth", "contract", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "open", "completion"]
+        + ["auth", "contract", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "open", "completion", "catalog", "defcon"]
     )
 
 
