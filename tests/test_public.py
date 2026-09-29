@@ -208,6 +208,23 @@ class TestDefcon(CliTestCase):
         err = self.run_cli_err("defcon", "mtr", "1", expect=0)
         self.assertIn("No traceroute", err)
 
+    def test_incident_history_pages_through_all_of_it(self) -> None:
+        rows = [json.loads(line) for line in self.run_cli("defcon", "incidents", "--all", "-o", "jsonl").splitlines()]
+        self.assertEqual(len(rows), 130)
+        self.assertEqual((rows[0]["id"], rows[-1]["id"]), (300, 171))
+        self.assertIsNone(rows[0]["resolvedAt"])
+        pages = [p for _, p in STATE.requests if p.startswith("/api/status/defcon/incidents")]
+        self.assertEqual(len(pages), 2)
+        self.assertIn("cursor=201", pages[1])
+
+        STATE.defcon["show"] = {"nodes": True, "incidents": False, "mtr": True}
+        self.assertIn("does not publish", self.run_cli_err("defcon", "incidents", "--all", expect=2))
+
+    def test_incident_history_on_a_site_without_one(self) -> None:
+        STATE.defcon_rest = False
+        err = self.run_cli_err("defcon", "incidents", "--all", expect=2)
+        self.assertIn("no public incident history", err)
+
     def test_a_site_without_the_rest_mirror_is_asked_over_trpc(self) -> None:
         STATE.defcon_rest = False
         row = json.loads(self.run_cli("defcon", "status", "-o", "jsonl"))

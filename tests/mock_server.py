@@ -168,6 +168,14 @@ class State:
         }
         #: False plays a site from before `GET /api/status/defcon`: those 404.
         self.defcon_rest = True
+        #: `defcon.public.incidents`, newest first; paged by id like the site.
+        self.defcon_history: list[dict[str, Any]] = [
+            {"id": 300 - n, "createdAt": f"2026-09-{27 - n % 20:02d}T10:00:00Z",
+             "resolvedAt": None if n == 0 else f"2026-09-{27 - n % 20:02d}T11:00:00Z",
+             "status": "DOWN" if n % 3 else "DEGRADED", "monitorName": "Homepage",
+             "nodeName": "Frankfurt", "message": f"incident {n}"}
+            for n in range(130)
+        ]
         self.defcon_mtr: dict[int, list[Any]] = {
             3: [{"nodeId": 1, "ts": "2026-09-27T11:00:00Z", "hops": [
                 {"hop": 1, "addr": "10.0.0.1", "name": "gw", "sent": 10, "recv": 10, "lossPct": 0, "bestMs": 1, "avgMs": 1.2, "worstMs": 2, "stdevMs": 0.1},
@@ -448,6 +456,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if rest == ["mtr"]:
             return ok(STATE.defcon_mtr.get(monitor, []))
+
+        if rest == ["incidents"]:
+            if not (STATE.defcon.get("enabled") and (STATE.defcon.get("show") or {}).get("incidents")):
+                return ok({"enabled": False, "items": [], "nextCursor": None})
+
+            cursor = int(query.get("cursor", "0") or 0)
+            limit = int(query.get("limit", "25"))
+            rows = [r for r in STATE.defcon_history if not cursor or r["id"] < cursor]
+            page = rows[:limit]
+            more = len(rows) > limit
+            return ok({"enabled": True, "items": page, "nextCursor": page[-1]["id"] if more else None})
 
         self._json(404, {"ok": False, "error": {"code": "not_found", "message": "Not found."}})
 

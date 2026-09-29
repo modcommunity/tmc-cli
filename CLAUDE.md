@@ -134,7 +134,8 @@ Two more surfaces, both **keyless**, both through `Context.public_transport()`
   origin** instead: tRPC is refused on the API container. `config.site_url()`
   picks that origin: `--site-url` > `TMC_SITE_URL` > profile option `site_url` >
   base URL minus `api.`. Only the public procedures — never `defcon.admin.*`.
-  The site's `show.nodes` / `show.incidents` switches
+  `incidents --all` pages `/api/status/defcon/incidents` (90 days, open and
+  resolved, `nextCursor`). The site's `show.nodes` / `show.incidents` switches
   are honoured even though `status` sends node rows regardless.
 
 ## Behaviours that exist for a specific reason
@@ -217,13 +218,6 @@ than against itself.
   key. Same shape of gap as the integration API below: a credential kind, not a
   command module. Leaderboards (`stats/top`) are game-scoped (`allowGame`) and
   need that token or a game's.
-- **Defcon incident history is not public.** `defcon.public.status` carries only
-  OPEN alerts (max 20). A history needs a new public procedure (or REST route)
-  in website-city returning resolved `DefconAlert` rows for public+enabled
-  monitors: `{id, createdAt, resolvedAt, status, monitorName, nodeName,
-  message}`, cursor-paged, gated on `defcon.statusPublic` and
-  `defcon.statusShowIncidents`, node named by `displayName ?? location` (never
-  `host`), 90-day cap. Then `tmc defcon incidents --all`.
 - `/api/content/server/integration/{stats,users}` sit under `/api/content` but
   belong to the **integration API** (`docs/api/integration-api.md`): a separate
   credential namespace (`tmci_`), scoped per-server, with its own scopes

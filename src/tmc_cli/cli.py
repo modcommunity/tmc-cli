@@ -870,7 +870,8 @@ def _build_defcon(sub: Any) -> None:
     monitor.add_argument("monitor", help="id, or (part of) its name")
 
     _leaf(ops, "nodes", "the monitoring nodes and their status", run(defcon_cmd.nodes))
-    _leaf(ops, "incidents", "open incidents (resolved ones are not public)", run(defcon_cmd.incidents))
+    history = _leaf(ops, "incidents", "open incidents (--all: the last 90 days, resolved too)", run(defcon_cmd.incidents))
+    history.add_argument("--all", action="store_true", help="the last 90 days, open and resolved, newest first")
 
     latency = _leaf(ops, "latency", "a monitor's latency history, per node", run(defcon_cmd.latency))
     latency.add_argument("monitor", help="id, or (part of) its name")

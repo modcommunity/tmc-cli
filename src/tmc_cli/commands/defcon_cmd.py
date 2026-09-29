@@ -24,9 +24,9 @@ are asked of the website origin instead (derived from the base URL:
 site's transformer is superjson, so a tRPC answer is
 `{"result": {"data": {"json": …}}}` and an input goes as `?input={"json": …}`.
 
-WHAT IS NOT PUBLIC, AND SO NOT HERE: resolved incidents. `status` carries the
-open ones (at most 20) and there is no public history — see the report in
-CLAUDE.md, Known gaps, for the endpoint that would add it.
+INCIDENTS. `status` carries the open ones (at most 20); `incidents --all` pages
+through `defcon.public.incidents` (website-city 1e456207): the last 90 days,
+open and resolved. A site from before that has no history to give, and says so.
 
 The site's own `show` switches are honoured: when the status page hides nodes
 or incidents, so does this, even though `status` sends node rows regardless.
@@ -61,7 +61,12 @@ REST = {
     "status": "/api/status/defcon",
     "series": "/api/status/defcon/series",
     "mtr": "/api/status/defcon/mtr",
+    "incidents": "/api/status/defcon/incidents",
 }
+
+#: `incidents --all`: rows per page, and a stop well past 90 days of them.
+HISTORY_PAGE = 100
+HISTORY_MAX_PAGES = 50
 
 
 def _call(ctx: Context, procedure: str, payload: dict[str, Any] | None = None) -> Any:
@@ -331,7 +336,10 @@ def nodes(ctx: Context) -> int:
 
 
 def incidents(ctx: Context) -> int:
-    """The OPEN incidents. Resolved ones are not public (see module doc)."""
+    """The open incidents, or with --all the last 90 days of them, resolved too."""
+
+    if getattr(ctx.args, "all", False):
+        return _incident_history(ctx)
 
     doc = _published(_status(ctx))
 
@@ -347,6 +355,44 @@ def incidents(ctx: Context) -> int:
 
     if not ctx.quiet and not rows:
         ctx.note("No open incidents.")
+
+    return 0
+
+
+def _incident_history(ctx: Context) -> int:
+    rows: list[dict[str, Any]] = []
+    cursor: int | None = None
+
+    for _ in range(HISTORY_MAX_PAGES):
+        try:
+            page = _call(ctx, "incidents", {"cursor": cursor, "limit": HISTORY_PAGE})
+        except ApiError as err:
+            if err.status != 404:
+                raise
+            raise UsageError(
+                "This site has no public incident history.",
+                hint="It predates defcon.public.incidents; 'tmc defcon incidents' lists the open ones.",
+            ) from None
+
+        if page is None:
+            return 0
+
+        if not page.get("enabled"):
+            raise UsageError("This site does not publish its incidents.")
+
+        rows.extend(page.get("items") or [])
+        cursor = page.get("nextCursor")
+
+        if not cursor:
+            break
+
+    ctx.emit(
+        rows,
+        columns=("id", "createdAt", "resolvedAt", "status", "monitorName", "nodeName", "message"),
+    )
+
+    if not ctx.quiet and not rows:
+        ctx.note("No incidents in the last 90 days.")
 
     return 0
 
