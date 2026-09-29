@@ -22,7 +22,7 @@ src/tmc_cli/
   commands/            one module per surface
                        (catalog_cmd: app API public reads; defcon_cmd: /status data)
 tests/
-  mock_server.py       in-memory stand-in for /api/content (+ app API reads, defcon tRPC)
+  mock_server.py       in-memory stand-in for /api/content (+ app API reads, defcon REST + tRPC)
   test_cli.py          drives cli.main() against it over a real socket
   test_contract.py     the published contract, offline
   test_public.py       open, catalog, defcon — the surfaces that take no key
@@ -126,12 +126,15 @@ Two more surfaces, both **keyless**, both through `Context.public_transport()`
   `/api/content` — `catalog_cmd._get` builds its own query for that reason.
   Errors are `{ok:false, error:{code,message}}`; `http.py` unwraps that and
   tRPC's `{error:{json:{message,data:{code}}}}`.
-- **`tmc defcon`** → tRPC `defcon.public.{status,series,mtr}` (superjson:
+- **`tmc defcon`** → `GET /api/status/defcon`, `/series`, `/mtr` on the **API
+  origin** (website-city's REST mirrors, app-API envelope, anonymous). On a 404
+  there (a site from before the mirrors), or whenever `--site-url` is given, it
+  asks tRPC `defcon.public.{status,series,mtr}` (superjson:
   `?input={"json":…}`, answer under `result.data.json`) on the **website
-  origin**: tRPC is refused on the API container (`SiteSurfaceRefusal`).
-  `config.site_url()` picks the origin: `--site-url` > `TMC_SITE_URL` > profile
-  option `site_url` > base URL minus `api.`. Only the public procedures —
-  never `defcon.admin.*`. The site's `show.nodes` / `show.incidents` switches
+  origin** instead: tRPC is refused on the API container. `config.site_url()`
+  picks that origin: `--site-url` > `TMC_SITE_URL` > profile option `site_url` >
+  base URL minus `api.`. Only the public procedures — never `defcon.admin.*`.
+  The site's `show.nodes` / `show.incidents` switches
   are honoured even though `status` sends node rows regardless.
 
 ## Behaviours that exist for a specific reason
@@ -221,9 +224,6 @@ than against itself.
   message}`, cursor-paged, gated on `defcon.statusPublic` and
   `defcon.statusShowIncidents`, node named by `displayName ?? location` (never
   `host`), 90-day cap. Then `tmc defcon incidents --all`.
-- **Defcon has no REST route**; tRPC on the site origin is the only way in. A
-  cacheable `GET /api/status/defcon` (same body as `defcon.public.status`,
-  served on the API origin too) would remove the `--site-url` dependency.
 - `/api/content/server/integration/{stats,users}` sit under `/api/content` but
   belong to the **integration API** (`docs/api/integration-api.md`): a separate
   credential namespace (`tmci_`), scoped per-server, with its own scopes

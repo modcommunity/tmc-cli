@@ -848,8 +848,9 @@ def _build_defcon(sub: Any) -> None:
         help="the public network status (Defcon, as on /status)",
         description=(
             "Read-only, public data only: exactly what the site's /status page shows. "
-            "Asked of the WEBSITE origin (--site-url), since tRPC is not served on "
-            "the API one. No credential is sent."
+            "Asked of the API origin (GET /api/status/defcon); a site without that "
+            "route, or --site-url, is asked over tRPC on the WEBSITE origin. "
+            "No credential is sent."
         ),
     )
     ops = defcon.add_subparsers(dest="defcon_op", metavar="<op>", required=True)

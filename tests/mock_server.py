@@ -166,6 +166,8 @@ class State:
                 "nodes": [{"id": 1, "name": "Frankfurt"}, {"id": 2, "name": "Sydney"}],
             }
         }
+        #: False plays a site from before `GET /api/status/defcon`: those 404.
+        self.defcon_rest = True
         self.defcon_mtr: dict[int, list[Any]] = {
             3: [{"nodeId": 1, "ts": "2026-09-27T11:00:00Z", "hops": [
                 {"hop": 1, "addr": "10.0.0.1", "name": "gw", "sent": 10, "recv": 10, "lossPct": 0, "bestMs": 1, "avgMs": 1.2, "worstMs": 2, "stdevMs": 0.1},
@@ -336,6 +338,11 @@ class Handler(BaseHTTPRequestHandler):
         # The app API and tRPC: public reads, answered only WITHOUT a credential
         # — a content key sent to the app API is refused as the wrong credential,
         # which is exactly what `tmc catalog` must avoid.
+        if parts[:3] == ["api", "status", "defcon"]:
+            self._read_body()
+            self._defcon_rest(parts[3:], query)
+            return
+
         if parts[:3] == ["api", "app", "v1"] or parts[:2] == ["api", "trpc"]:
             self._read_body()
 
@@ -418,6 +425,31 @@ class Handler(BaseHTTPRequestHandler):
             return ok(STATE.defcon_mtr.get(payload["monitorId"], []))
 
         self._json(404, {"error": {"json": {"message": f'No "query"-procedure on path "{procedure}"', "data": {"code": "NOT_FOUND"}}}})
+
+    def _defcon_rest(self, rest: list[str], query: dict[str, str]) -> None:
+        """`GET /api/status/defcon[/series|/mtr]`: the same objects, app-API envelope."""
+
+        def ok(value: Any) -> None:
+            self._json(200, {"ok": True, "data": value})
+
+        if not STATE.defcon_rest:
+            return self._json(404, {"ok": False, "error": {"code": "not_found", "message": "Not found."}})
+
+        if rest == []:
+            return ok(STATE.defcon)
+
+        monitor = int(query.get("monitorId", "0") or 0)
+
+        if rest == ["series"]:
+            if query.get("range") not in (None, "day", "week", "month", "year", "all"):
+                return self._json(400, {"ok": False, "error": {"code": "invalid", "message": "Invalid enum value"}})
+
+            return ok(STATE.defcon_series.get(monitor, {"points": [], "buckets": [], "nodes": []}))
+
+        if rest == ["mtr"]:
+            return ok(STATE.defcon_mtr.get(monitor, []))
+
+        self._json(404, {"ok": False, "error": {"code": "not_found", "message": "Not found."}})
 
     def _app_api(self, rest: list[str], query: dict[str, list[str]]) -> None:
         def ok(data: Any) -> None:

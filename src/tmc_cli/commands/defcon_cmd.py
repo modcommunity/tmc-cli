@@ -14,12 +14,15 @@ configuration, node hosts and full URLs, which the public procedures exist
 precisely to leave out ("Nothing public names a node's host or a monitor's full
 URL").
 
-WHY tRPC AND THE SITE ORIGIN. There is no REST route for any of this; the status
-page is the only consumer. tRPC is refused on the API container
-(`SiteSurfaceRefusal`), so these go to `--site-url` (derived from the base URL:
-`api.example.com` → `example.com`). The site's transformer is superjson, so an
-answer is `{"result": {"data": {"json": …}}}` and an input goes as
-`?input={"json": …}`.
+WHICH ORIGIN. Each procedure has a REST mirror on the API origin since
+website-city b11efdfe/d83fb2bb (`GET /api/status/defcon`, `/series`, `/mtr`,
+anonymous, the same objects in the app API's `{"ok", "data"}` envelope), so by
+default these need only the base URL. A site that predates the mirrors answers
+404 there, and then — or whenever `--site-url` is given — the tRPC procedures
+are asked of the website origin instead (derived from the base URL:
+`api.example.com` → `example.com`; tRPC is refused on the API container). The
+site's transformer is superjson, so a tRPC answer is
+`{"result": {"data": {"json": …}}}` and an input goes as `?input={"json": …}`.
 
 WHAT IS NOT PUBLIC, AND SO NOT HERE: resolved incidents. `status` carries the
 open ones (at most 20) and there is no public history — see the report in
@@ -53,7 +56,31 @@ STATUS_ORDER = ("DOWN", "DEGRADED", "UNKNOWN", "OK")
 CHECK_EXIT = {"OK": 0, "DEGRADED": 1, "UNKNOWN": 3, "DOWN": 2}
 
 
+#: The REST mirror of each `defcon.public.*` procedure, on the API origin.
+REST = {
+    "status": "/api/status/defcon",
+    "series": "/api/status/defcon/series",
+    "mtr": "/api/status/defcon/mtr",
+}
+
+
 def _call(ctx: Context, procedure: str, payload: dict[str, Any] | None = None) -> Any:
+    if not getattr(ctx.args, "site_url", None):
+        params = {k: v for k, v in (payload or {}).items() if v is not None}
+
+        try:
+            response = ctx.public_transport().request("GET", REST[procedure], params=params or None)
+        except ApiError as err:
+            # A site from before the mirrors: fall through to its tRPC.
+            if err.status != 404:
+                raise
+        else:
+            return None if ctx.dry_run else response.data
+
+    return _call_trpc(ctx, procedure, payload)
+
+
+def _call_trpc(ctx: Context, procedure: str, payload: dict[str, Any] | None = None) -> Any:
     params = {"input": json.dumps({"json": payload})} if payload is not None else None
     response = ctx.public_transport(site=True).request(
         "GET", f"/api/trpc/defcon.public.{procedure}", params=params

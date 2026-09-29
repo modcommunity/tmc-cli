@@ -139,7 +139,7 @@ class TestDefcon(CliTestCase):
             (row["overall"], row["monitors"], row["degraded"], row["openIncidents"]),
             ("DEGRADED", 3, 1, 1),
         )
-        self.assertTrue(STATE.requests[-1][1].startswith("/api/trpc/defcon.public.status"))
+        self.assertEqual(STATE.requests[-1][1], "/api/status/defcon")
         self.assertIsNone(STATE.auth_headers[-1])
 
         self.run_cli("defcon", "status", "--check", expect=1)
@@ -193,8 +193,9 @@ class TestDefcon(CliTestCase):
         self.assertEqual(len(rows.strip().splitlines()), 3)
 
         sent = STATE.requests[-1][1]
-        self.assertIn("defcon.public.series", sent)
-        self.assertIn("%22range%22%3A+%22week%22", sent)
+        self.assertTrue(sent.startswith("/api/status/defcon/series?"), sent)
+        self.assertIn("range=week", sent)
+        self.assertIn("monitorId=1", sent)
 
         summary = json.loads(self.run_cli("defcon", "latency", "1", "--summary", "-o", "json"))
         frankfurt = next(r for r in summary if r["node"] == "Frankfurt")
@@ -206,6 +207,24 @@ class TestDefcon(CliTestCase):
 
         err = self.run_cli_err("defcon", "mtr", "1", expect=0)
         self.assertIn("No traceroute", err)
+
+    def test_a_site_without_the_rest_mirror_is_asked_over_trpc(self) -> None:
+        STATE.defcon_rest = False
+        row = json.loads(self.run_cli("defcon", "status", "-o", "jsonl"))
+        self.assertEqual(row["overall"], "DEGRADED")
+        paths = [p for _, p in STATE.requests]
+        self.assertEqual(paths[0], "/api/status/defcon")
+        self.assertTrue(paths[1].startswith("/api/trpc/defcon.public.status"))
+
+        rows = self.run_cli("defcon", "latency", "1", "--range", "week", "-o", "csv")
+        self.assertIn("defcon.public.series", STATE.requests[-1][1])
+        self.assertGreater(len(rows.strip().splitlines()), 1)
+        self.assertIn("10.0.0.1", self.run_cli("defcon", "mtr", "3", "-o", "csv"))
+
+    def test_site_url_goes_straight_to_trpc(self) -> None:
+        self.run_cli("defcon", "status", "--site-url", self.server.base_url)
+        self.assertEqual(len(STATE.requests), 1)
+        self.assertTrue(STATE.requests[0][1].startswith("/api/trpc/defcon.public.status"))
 
     def test_dry_run_sends_nothing(self) -> None:
         self.run_cli("defcon", "monitors", "--dry-run")
