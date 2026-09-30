@@ -109,8 +109,11 @@ grammar, run as the signed-in session. The two are kept in step by the contract
 (`/api/content/spec`, `docs/api/cli-contract.md`), whose `commands` are
 `ConsoleSpec()`. This repo cannot change the console; a command added here shows
 up in `tmc contract drift` as "this build has, the site lacks" (non-failing)
-until the console grows it. `catalog` and `defcon` are in that state today —
-neither is CLI-only by nature, so they are deliberately NOT in `CLI_ONLY`.
+until the console grows it. `catalog` and `defcon` were in that state until the
+console grew both (website-city `src/lib/console/public.ts`, run in process);
+its `spec.test.ts` pins their positionals and flags to `_build_catalog` /
+`_build_defcon` here, so changing either tree means changing that table too.
+Neither is CLI-only by nature, so they are deliberately NOT in `CLI_ONLY`.
 
 ## Beyond /api/content
 

@@ -325,9 +325,11 @@ collection user`. Ids on this surface are strings.
 ## Network status (Defcon)
 
 `tmc defcon` reads the public half of Defcon, the network monitor — exactly
-what the site's `/status` page shows, from the same tRPC procedures
-(`defcon.public.status|series|mtr`). No credential; asked of the website
-origin (see `open` above), since tRPC is not served on the API one.
+what the site's `/status` page shows. No credential. It asks the API origin's
+REST mirrors (`/api/status/defcon`, `/series`, `/mtr`, `/incidents`), so the
+base URL is all it needs; against a site from before those mirrors (a 404), or
+when `--site-url` is given, it asks the website origin's tRPC procedures
+(`defcon.public.status|series|mtr`) instead.
 
 ```bash
 tmc defcon status                # overall verdict, counts, open incidents
@@ -336,14 +338,15 @@ tmc defcon monitors --status DOWN --status DEGRADED
 tmc defcon monitor homepage      # by id or (part of) name: per-node latency now
 tmc defcon nodes                 # monitoring nodes, when the site publishes them
 tmc defcon incidents             # open incidents
+tmc defcon incidents --all       # the last 90 days, open and resolved
 tmc defcon latency 3 --range week --summary   # per node: latest, mean, peak ms
 tmc defcon latency 3 --range day --node frankfurt -o csv
 tmc defcon mtr 5                 # latest traceroute of an MTR monitor
 ```
 
 The site's own switches are honoured: when the status page hides nodes or
-incidents, so does this. Resolved incidents are not public, so there is no
-incident history here.
+incidents, so does this. Incident history (`--all`) goes back 90 days and needs
+a site with `/api/status/defcon/incidents`.
 
 ## Shell completion
 
@@ -390,6 +393,7 @@ The API this speaks to is documented in the website repo at
 
 `tmc catalog` speaks to the app API's public reads (`src/app/api/app/v1/`,
 query and response shapes in `src/types/app-api/contract.ts`); `tmc defcon` to
-`src/server/api/routers/defcon/public.ts`, described in `docs/defcon.md`. The
+`src/app/api/status/defcon/` (tRPC fallback:
+`src/server/api/routers/defcon/public.ts`), described in `docs/defcon.md`. The
 command grammar the web console shares with this tool is published at
 `/api/content/spec` (`docs/api/cli-contract.md`).
