@@ -232,7 +232,7 @@ than against itself.
 
 ## External source code
 
-`~/stack/external-study/` holds third-party source cloned **to be read** — Godot, the
+`/extra/external/` holds third-party source cloned **to be read** — Godot, the
 Source engine, Momentum Mod, Shavit's `bhoptimer`, and the mod managers. Read-only,
 never a dependency, never imported. Look there before designing something from
-scratch; see [`external-study/README.md`](../external-study/README.md).
+scratch; see `/extra/external/README.md`.
