@@ -11,7 +11,8 @@ src/tmc_cli/
   cli.py               argparse wiring + dispatch; the command surface lives here
   context.py           what commands are handed (lazy client, output helpers)
   config.py            profiles in ~/.config/tmc/config.json, env overrides
-  auth.py              Bearer / Jwt / Anonymous credentials (one header per attempt)
+  auth.py              Bearer / Jwt / AppToken / Anonymous credentials (one header per attempt)
+  app_api.py           app-user session: stored pair, refresh-once, app API query dialect
   ed25519.py           PKCS#8 PEM parse + signing; cryptography or RFC 8032 fallback
   http.py              transport: urllib, retries, multipart streaming
   client.py            the API as methods; batching lives here
@@ -20,12 +21,16 @@ src/tmc_cli/
   params.py            --set/--json → a typed JSON body
   output.py            table/json/csv/yaml rendering
   commands/            one module per surface
-                       (catalog_cmd: app API public reads; defcon_cmd: /status data)
+                       (catalog_cmd: app API public reads; defcon_cmd: /status data;
+                        appuser_cmd: device login + friends/party/presence/installs/
+                        subscriptions/reviews/stats as the signed-in member)
 tests/
-  mock_server.py       in-memory stand-in for /api/content (+ app API reads, defcon REST + tRPC)
+  mock_server.py       in-memory stand-in for /api/content (+ app API reads, defcon REST + tRPC,
+                       and the app API as a member: device flow, rotation, per-user routes)
   test_cli.py          drives cli.main() against it over a real socket
   test_contract.py     the published contract, offline
   test_public.py       open, catalog, defcon — the surfaces that take no key
+  test_app_user.py     app-login (pending/slow_down/denied/expiry), refresh, every app-user group
 ```
 
 ## The source of truth
@@ -126,9 +131,11 @@ Two more surfaces, both **keyless**, both through `Context.public_transport()`
   credential is refused `403 wrong_credential` — so sending the profile's key
   would break reads that need none. List params are REPEATED keys (`parseQuery` +
   `normalizeArrayFields`), not the comma form `encode_params` uses for
-  `/api/content` — `catalog_cmd._get` builds its own query for that reason.
-  Errors are `{ok:false, error:{code,message}}`; `http.py` unwraps that and
-  tRPC's `{error:{json:{message,data:{code}}}}`.
+  `/api/content` — `app_api.query_string` builds that dialect.
+  Errors are FLAT, `{ok:false, code, message, retryAfter?}` (`apiError` in
+  `src/lib/app-api/handler.ts`); `http.py` unwraps that, the nested
+  `{error:{code,message}}` form this file used to claim, and tRPC's
+  `{error:{json:{message,data:{code}}}}`.
 - **`tmc defcon`** → `GET /api/status/defcon`, `/series`, `/mtr` on the **API
   origin** (website-city's REST mirrors, app-API envelope, anonymous). On a 404
   there (a site from before the mirrors), or whenever `--site-url` is given, it
@@ -140,6 +147,44 @@ Two more surfaces, both **keyless**, both through `Context.public_transport()`
   `incidents --all` pages `/api/status/defcon/incidents` (90 days, open and
   resolved, `nextCursor`). The site's `show.nodes` / `show.incidents` switches
   are honoured even though `status` sends node rows regardless.
+
+## The app API as the signed-in member
+
+A second credential kind, held in the same profile as the content key
+(`Profile.app`: `base_url`, `access_token`, `refresh_token`, `expires_at`,
+`user`; same 0600 file, never printed). Commands: `tmc auth app-login |
+app-logout | app-whoami`, then `friends`, `party`, `presence`, `installs`,
+`subscriptions`, `reviews` (writes — `tmc review` is the content type), `stats`.
+
+Site routes (`src/app/api/app/v1/…/route.ts`, schemas in
+`src/types/app-api/contract.ts` and `src/types/party/*`):
+
+- **Login**: `auth/device` (`{client:{name,platform,version}, codeChallenge}`;
+  PKCE is **S256 only**, `VerifyPkce` in `src/server/auth/app-token.ts`) →
+  poll `auth/token` (`{deviceCode, codeVerifier}`). Pending and `slow_down` are
+  **202** with the error envelope — a 2xx, so they come back as a `Response`, not
+  an `ApiError`; `access_denied` / `expired_token` are 400. The poll waits the
+  server's `interval` and adds 5s for good on `slow_down` (RFC 8628), and stops
+  at `expiresIn`. `appuser_cmd._sleep` is the seam the tests patch.
+- **Session**: `auth/refresh` (`{refreshToken}`, no bearer; ROTATES — the old
+  refresh token is retired, and replaying a retired one revokes the family, so
+  the new pair is saved immediately), `auth/revoke` (whole lineage), `me`.
+  `AppSession.request` refreshes at most once per call — before sending when
+  `expires_at` has passed, or after a 401 — then fails with the sign-in hint. A
+  refresh refused 400/401 drops the stored pair. The session is bound to the base
+  URL it came from and is never presented to another. `TMC_APP_TOKEN` is the
+  env override (used as-is, no refresh).
+- **Covered**: `friends` (list, requests, request, respond, cancel, remove),
+  `presence` (GET — `userIds` is ONE comma-joined string, unlike the rest of
+  this API — and POST), `party` (mine, `[id]`, create, invite, invites,
+  invite/respond, join, leave, kick, ready, start), `installs` (GET/POST/PATCH/
+  DELETE, DELETE takes a JSON body) and `installs/items` (POST/PATCH/DELETE),
+  `subscriptions` (GET/POST) and `subscriptions/prefs`, `reviews/write`
+  (POST write, DELETE, PUT vote), `stats/top`, `stats/me`, `stats/defs`.
+- **Left out on purpose**: party cancel/connected/end/force-start/heartbeat/
+  role/transfer/reserve*/`[id]/ready` (game-loop and host-admin plumbing),
+  `PATCH me` (settings sync), `downloads`, `packs`, `play/*`, `report`,
+  `avatar`, `stats/submit`, `auth/handoff` (a GAME token's, not a device's).
 
 ## Behaviours that exist for a specific reason
 
@@ -215,17 +260,11 @@ than against itself.
 
 ## Known gaps
 
-- **Per-user app API** (`/api/app/v1` friends, parties, presence, installs,
-  subscriptions, downloads, writing reviews, `stats/me`) takes an app-user token
-  from the device flow (`auth/device` → `auth/token`, `tmca_…`), not a content
-  key. Same shape of gap as the integration API below: a credential kind, not a
-  command module. Leaderboards (`stats/top`) are game-scoped (`allowGame`) and
-  need that token or a game's.
 - `/api/content/server/integration/{stats,users}` sit under `/api/content` but
   belong to the **integration API** (`docs/api/integration-api.md`): a separate
   credential namespace (`tmci_`), scoped per-server, with its own scopes
   (`SERVER_STATS` / `SERVER_USERS`). They are not reachable with a content-API
-  key, so `tmc` does not speak to them. Adding them means a second credential
+  key, so `tmc` does not speak to them. Adding them means another credential
   kind in `config.py`, not a new command module.
 
 ---

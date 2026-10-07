@@ -183,6 +183,7 @@ class State:
         }
         #: The app API's public reads, keyed by what they answer for.
         self.catalog_items = [app_summary(n) for n in range(1, 6)]
+        self.app = AppUserState()
 
     def take_id(self) -> int:
         value = self.next_id
@@ -190,8 +191,6 @@ class State:
 
         return value
 
-
-STATE = State()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -351,11 +350,18 @@ class Handler(BaseHTTPRequestHandler):
             self._defcon_rest(parts[3:], query)
             return
 
+        if parts[:3] == ["api", "app", "v1"] and parts[3:4] and (
+            parts[3] in APP_USER_ROOTS or parts[3:5] == ["reviews", "write"]
+        ):
+            body = self._read_json() if method != "GET" else None
+            _app_user(self, method, "/".join(parts[3:]), parse_qs(parsed.query), body)
+            return
+
         if parts[:3] == ["api", "app", "v1"] or parts[:2] == ["api", "trpc"]:
             self._read_body()
 
             if self.headers.get("Authorization"):
-                self._json(403, {"ok": False, "error": {"code": "wrong_credential", "message": "This endpoint cannot be called with a publishing credential."}})
+                self._json(403, {"ok": False, "code": "wrong_credential", "message": "This endpoint cannot be called with a publishing credential."})
                 return
 
             if parts[1] == "trpc":
@@ -441,7 +447,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "data": value})
 
         if not STATE.defcon_rest:
-            return self._json(404, {"ok": False, "error": {"code": "not_found", "message": "Not found."}})
+            return self._json(404, {"ok": False, "code": "not_found", "message": "Not found."})
 
         if rest == []:
             return ok(STATE.defcon)
@@ -450,7 +456,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if rest == ["series"]:
             if query.get("range") not in (None, "day", "week", "month", "year", "all"):
-                return self._json(400, {"ok": False, "error": {"code": "invalid", "message": "Invalid enum value"}})
+                return self._json(400, {"ok": False, "code": "invalid", "message": "Invalid enum value"})
 
             return ok(STATE.defcon_series.get(monitor, {"points": [], "buckets": [], "nodes": []}))
 
@@ -468,7 +474,7 @@ class Handler(BaseHTTPRequestHandler):
             more = len(rows) > limit
             return ok({"enabled": True, "items": page, "nextCursor": page[-1]["id"] if more else None})
 
-        self._json(404, {"ok": False, "error": {"code": "not_found", "message": "Not found."}})
+        self._json(404, {"ok": False, "code": "not_found", "message": "Not found."})
 
     def _app_api(self, rest: list[str], query: dict[str, list[str]]) -> None:
         def ok(data: Any) -> None:
@@ -483,7 +489,7 @@ class Handler(BaseHTTPRequestHandler):
             # Repeated keys, never commas: the real `parseQuery` would take
             # "1,2" as one string and the schema would refuse it.
             if any("," in v for values in query.values() for v in values):
-                return self._json(400, {"ok": False, "error": {"code": "BAD_REQUEST", "message": "Expected number, received string"}})
+                return self._json(400, {"ok": False, "code": "BAD_REQUEST", "message": "Expected number, received string"})
 
             items = [i for i in STATE.catalog_items if i["kind"] == one("kind")]
 
@@ -511,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
                         "dependencies": [{"relation": "REQUIRED", "note": None, "kind": "mod", "id": 2, "name": "Lib", "icon": None}],
                     })
 
-            return self._json(404, {"ok": False, "error": {"code": "NOT_FOUND", "message": "Not found."}})
+            return self._json(404, {"ok": False, "code": "NOT_FOUND", "message": "Not found."})
 
         if route == "facets":
             return ok({
@@ -534,11 +540,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "servers/lookup":
             if not one("host"):
-                return self._json(400, {"ok": False, "error": {"code": "BAD_REQUEST", "message": "host is required"}})
+                return self._json(400, {"ok": False, "code": "BAD_REQUEST", "message": "host is required"})
 
             return ok({"servers": [i for i in STATE.catalog_items if i["kind"] == "server"]})
 
-        self._json(404, {"ok": False, "error": {"code": "NOT_FOUND", "message": "Not found."}})
+        self._json(404, {"ok": False, "code": "NOT_FOUND", "message": "Not found."})
 
     # -- the unauthenticated surface -----------------------------------------
 
@@ -1112,3 +1118,467 @@ class MockServer:
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(timeout=5)
+
+
+# ---- the app API as a signed-in member ----------------------------------------
+#
+# The device flow, token rotation and the per-user routes, modelled on website-
+# city `src/app/api/app/v1/**` and `src/lib/app-api/handler.ts`:
+#
+#   - errors are the FLAT envelope `{ok:false, code, message}`;
+#   - the poll answers 202 for `authorization_pending` / `slow_down` and 400 for
+#     `access_denied` / `expired_token`, and checks PKCE (S256) like `VerifyPkce`;
+#   - a presented-but-dead access token is `401 token_expired`, no header at all
+#     is `401 unauthorized` — the distinction the CLI's refresh keys on;
+#   - `auth/refresh` ROTATES: the old refresh token is retired, and presenting a
+#     retired one revokes the family (`token_reuse`), as `RotateAppToken` does.
+
+APP_USER_ROOTS = {"auth", "me", "friends", "party", "presence", "installs", "subscriptions", "stats"}
+
+APP_USERS = {
+    "u1": {"id": "u1", "name": "Ann", "username": "ann", "avatar": None, "role": "USER"},
+    "u2": {"id": "u2", "name": "Bob", "username": "bob", "avatar": None, "role": "USER"},
+    "u3": {"id": "u3", "name": "Cat", "username": "cat", "avatar": None, "role": "USER"},
+}
+
+OFFLINE = {"status": "offline", "appId": None, "appName": None, "serverId": None, "serverName": None,
+           "partyId": None, "joinable": False, "detail": None, "updatedAt": None}
+
+
+class AppUserState:
+    def __init__(self) -> None:
+        #: deviceCode → grant. `plan` is what successive polls answer before the
+        #: grant is approved: e.g. ["authorization_pending", "slow_down"].
+        self.grants: dict[str, dict[str, Any]] = {}
+        self.plan: list[str] = ["authorization_pending"]
+        self.polls: list[str] = []
+        self.access: dict[str, str] = {}
+        self.refresh: dict[str, str] = {}
+        self.retired: set[str] = set()
+        self.revoked = 0
+        self.refreshes = 0
+        self.serial = 0
+        self.friends = {"u1": ["u2"]}
+        self.requests = [{"id": 11, "from": "u3", "to": "u1", "createdAt": "2026-10-01T10:00:00Z"}]
+        self.presence = {"u2": {**OFFLINE, "status": "in_game", "appId": 1, "appName": "Seed", "updatedAt": "2026-10-07T10:00:00Z"}}
+        self.parties: dict[str, dict[str, Any]] = {}
+        self.invites: list[dict[str, Any]] = [{"id": "900", "partyId": "500", "partyName": "Bob's", "inviterId": "u2", "message": None, "to": "u1"}]
+        self.installs: dict[int, dict[str, Any]] = {}
+        self.subs: dict[tuple[str, int], dict[str, Any]] = {}
+        self.reviews: dict[tuple[str, int], dict[str, Any]] = {}
+        self.stats = {1: {"kills": [("u2", 50.0), ("u1", 30.0), ("u3", 10.0)]}}
+
+    def next(self) -> int:
+        self.serial += 1
+        return self.serial
+
+    def issue(self, user_id: str) -> dict[str, Any]:
+        n = self.next()
+        access, refresh = f"tmc_at_{n:04d}" + "x" * 40, f"tmc_rt_{n:04d}" + "y" * 40
+        self.access[access] = user_id
+        self.refresh[refresh] = user_id
+        return {"accessToken": access, "refreshToken": refresh, "expiresIn": 3600, "user": APP_USERS[user_id]}
+
+    def expire_all_access(self) -> None:
+        """Every access token issued so far now reads as dead (`token_expired`)."""
+        self.access.clear()
+
+
+def _b64u_sha256(text: str) -> str:
+    import base64
+    import hashlib
+
+    return base64.urlsafe_b64encode(hashlib.sha256(text.encode()).digest()).rstrip(b"=").decode()
+
+
+def _app_user(h: "Handler", method: str, route: str, query: dict[str, list[str]], body: Any) -> None:
+    app = STATE.app
+
+    def ok(data: Any, status: int = 200) -> None:
+        h._json(status, {"ok": True, "data": data})
+
+    def fail(status: int, code: str, message: str) -> None:
+        h._json(status, {"ok": False, "code": code, "message": message})
+
+    def q(key: str) -> str | None:
+        return query.get(key, [None])[-1]
+
+    b = body if isinstance(body, dict) else {}
+
+    # ---- auth: none
+    if route == "auth/device" and method == "POST":
+        client = b.get("client") or {}
+        challenge = b.get("codeChallenge")
+        if not (isinstance(challenge, str) and 43 <= len(challenge) <= 128) or client.get("platform") not in (
+            "windows", "macos", "linux", "android", "ios", "unknown"
+        ) or not client.get("name") or not client.get("version"):
+            return fail(400, "bad_request", "Invalid request.")
+        code = f"tmc_dc_{app.next():04d}" + "z" * 30
+        app.grants[code] = {"challenge": challenge, "plan": list(app.plan), "client": client}
+        return ok({"deviceCode": code, "userCode": "WDJB-MJHT", "verificationUri": "https://example.test/login/device",
+                   "verificationUriComplete": "https://example.test/login/device?code=WDJB-MJHT", "expiresIn": 600, "interval": 5})
+
+    if route == "auth/token" and method == "POST":
+        grant = app.grants.get(b.get("deviceCode") or "")
+        verifier = b.get("codeVerifier") or ""
+        if grant is None:
+            return fail(400, "expired_token", "This login attempt expired. Start again.")
+        if not (43 <= len(verifier) <= 128) or _b64u_sha256(verifier) != grant["challenge"]:
+            app.grants.pop(b["deviceCode"], None)
+            return fail(400, "expired_token", "This login attempt expired. Start again.")
+        if grant["plan"]:
+            outcome = grant["plan"].pop(0)
+            app.polls.append(outcome)
+            if outcome in ("authorization_pending", "slow_down"):
+                return fail(202, outcome, "Waiting." if outcome == "authorization_pending" else "Polling too quickly.")
+            app.grants.pop(b["deviceCode"], None)
+            return fail(400, outcome, "This device was not approved." if outcome == "access_denied" else "Expired.")
+        app.polls.append("approved")
+        app.grants.pop(b["deviceCode"], None)
+        return ok(app.issue("u1"))
+
+    if route == "auth/refresh" and method == "POST":
+        token = b.get("refreshToken") or ""
+        app.refreshes += 1
+        if token in app.retired:
+            app.access.clear()
+            app.refresh.clear()
+            return fail(401, "token_reuse", "This session was signed out because its credentials were used from somewhere else.")
+        user = app.refresh.pop(token, None)
+        if user is None:
+            return fail(401, "invalid_grant", "Sign in again.")
+        app.retired.add(token)
+        return ok(app.issue(user))
+
+    # ---- auth: required
+    header = h.headers.get("Authorization") or ""
+    bearer = header[7:].strip() if header.startswith("Bearer ") else ""
+    if bearer and bearer not in app.access:
+        return fail(401, "token_expired", "This session has expired. Sign in again.")
+    if not bearer:
+        return fail(401, "unauthorized", "Authentication is required.")
+    me = app.access[bearer]
+
+    def bad(message: str = "Invalid request.") -> None:
+        fail(400, "bad_request", message)
+
+    def digits(v: Any) -> bool:
+        return isinstance(v, str) and v.isdigit() and len(v) <= 20
+
+    if route == "auth/revoke" and method == "POST":
+        app.access = {k: v for k, v in app.access.items() if v != me}
+        app.refresh = {k: v for k, v in app.refresh.items() if v != me}
+        app.revoked += 1
+        return ok({"revoked": True})
+
+    if route == "me" and method == "GET":
+        return ok({"user": APP_USERS[me], "settings": {}, "serverTime": int(time.time())})
+
+    # friends
+    def display(uid: str) -> str:
+        return APP_USERS[uid]["name"]
+
+    if route == "friends" and method == "GET":
+        return ok([{"userId": f, "displayName": display(f), "avatarUrl": None, "presence": app.presence.get(f, OFFLINE)}
+                   for f in app.friends.get(me, [])])
+    if route == "friends/requests" and method == "GET":
+        def row(r: dict[str, Any], other: str) -> dict[str, Any]:
+            return {"id": r["id"], "userId": other, "displayName": display(other), "createdAt": r["createdAt"]}
+        return ok({"incoming": [row(r, r["from"]) for r in app.requests if r["to"] == me],
+                   "outgoing": [row(r, r["to"]) for r in app.requests if r["from"] == me]})
+    if route == "friends/request" and method == "POST":
+        uid = b.get("userId")
+        if not isinstance(uid, str) or not uid:
+            return bad()
+        if uid not in APP_USERS or uid == me:
+            return fail(404, "friends.request.deny.notFound", "That member could not be found.")
+        rid = 100 + app.next()
+        app.requests.append({"id": rid, "from": me, "to": uid, "createdAt": "2026-10-07T00:00:00Z"})
+        return ok({"id": rid})
+    if route in ("friends/respond", "friends/cancel") and method == "POST":
+        rid = b.get("requestId")
+        if not isinstance(rid, int) or (route == "friends/respond" and not isinstance(b.get("accept"), bool)):
+            return bad()
+        mine = "to" if route == "friends/respond" else "from"
+        match = next((r for r in app.requests if r["id"] == rid and r[mine] == me), None)
+        if match is None:
+            return fail(404, f"{route.replace('/', '.')}.deny.notFound", "That request could not be found.")
+        app.requests.remove(match)
+        if route == "friends/respond" and b["accept"]:
+            app.friends.setdefault(me, []).append(match["from"])
+        return ok(None)
+    if route == "friends/remove" and method == "POST":
+        uid = b.get("userId")
+        if uid not in app.friends.get(me, []):
+            return fail(404, "friends.remove.deny.notFound", "You are not friends.")
+        app.friends[me].remove(uid)
+        return ok(None)
+
+    # presence
+    if route == "presence" and method == "GET":
+        raw = q("userIds")
+        if len(query.get("userIds", [])) > 1:
+            return bad("Expected string, received array")
+        ids = [i for i in (raw or "").split(",") if i]
+        return ok({i: app.presence.get(i, OFFLINE) for i in ids if i in app.friends.get(me, [])})
+    if route == "presence" and method == "POST":
+        status = b.get("status")
+        if status not in ("offline", "online", "in_game", "away"):
+            return fail(400, "presence.deny.status", "A presence is offline, online, in_game or away.")
+        if b.get("partyId") is not None and not digits(b["partyId"]):
+            return bad()
+        app.presence[me] = {**OFFLINE, "status": status, "serverId": b.get("serverId"), "partyId": b.get("partyId"),
+                            "joinable": bool(b.get("joinable")), "detail": b.get("detail")}
+        return ok({"ttlSec": 120})
+
+    # parties
+    def party_view(pid: str) -> dict[str, Any]:
+        p = app.parties[pid]
+        members = [{"userId": u, "displayName": display(u), "gameName": None, "role": "HOST" if u == p["hostId"] else "MEMBER",
+                    "state": "JOINED", "presence": "ONLINE", "joinedAt": "2026-10-07T00:00:00Z", "leftAt": None,
+                    "readyAt": "2026-10-07T00:01:00Z" if u in p["ready"] else None, "connectedAt": None,
+                    "score": 0, "kills": 0, "deaths": 0, "assist": 0} for u in p["members"]]
+        return {**{k: v for k, v in p.items() if k not in ("members", "ready", "password")}, "users": len(members), "members": members}
+
+    def ready_view(pid: str) -> dict[str, Any]:
+        p = app.parties[pid]
+        total, ready = len(p["members"]), len(p["ready"])
+        return {"stage": p["stage"], "openedAt": None, "elapsedSec": 0, "total": total, "ready": ready,
+                "pct": ready * 100 // total if total else 0, "autoPct": 0, "autoSec": 30, "countdownSec": None,
+                "members": [], "membersHidden": False,
+                "me": {"isMember": me in p["members"], "ready": me in p["ready"], "connected": False, "canManage": p["hostId"] == me},
+                "connect": None, "started": p["stage"] == "PLAYING"}
+
+    def mine() -> str | None:
+        return next((pid for pid, p in app.parties.items() if me in p["members"]), None)
+
+    def known(pid: Any) -> bool:
+        return digits(pid) and pid in app.parties
+
+    if route == "party/mine" and method == "GET":
+        pid = mine()
+        return ok(party_view(pid) if pid else None)
+    if route.startswith("party/") and route.count("/") == 1 and method == "GET" and route[6:].isdigit():
+        pid = route[6:]
+        return ok(party_view(pid)) if pid in app.parties else fail(404, "not_found", "Not found.")
+    if route == "party/create" and method == "POST":
+        if not isinstance(b.get("appId"), int):
+            return bad("Expected number, received string")
+        if b.get("type", "PUBLIC") not in ("PUBLIC", "PUBLIC_PASSWORD", "FRIENDS", "PRIVATE"):
+            return bad()
+        pid = str(500 + app.next())
+        app.parties[pid] = {"id": pid, "name": b.get("name"), "type": b.get("type", "PUBLIC"), "techType": "WEB",
+                            "maxUsers": b.get("maxUsers", 8), "stage": "LOBBY", "startTime": "2026-10-07T00:00:00Z",
+                            "endTime": None, "mapName": None, "gameMode": None, "hostId": me, "appId": b["appId"],
+                            "serverId": b.get("serverId"), "members": [me], "ready": set(), "password": b.get("password")}
+        return ok(party_view(pid))
+    if route == "party/invite" and method == "POST":
+        if not known(b.get("id")) or not isinstance(b.get("userIds"), list) or not b["userIds"]:
+            return bad() if not digits(b.get("id")) else fail(404, "not_found", "Not found.")
+        ids = []
+        for uid in b["userIds"]:
+            iid = str(900 + app.next())
+            app.invites.append({"id": iid, "partyId": b["id"], "partyName": app.parties[b["id"]]["name"], "inviterId": me, "message": b.get("message"), "to": uid})
+            ids.append(iid)
+        return ok(ids)
+    if route == "party/invites" and method == "GET":
+        return ok([{k: v for k, v in i.items() if k != "to"} for i in app.invites if i["to"] == me])
+    if route == "party/invite/respond" and method == "POST":
+        if not digits(b.get("inviteId")) or not isinstance(b.get("accept"), bool):
+            return bad()
+        inv = next((i for i in app.invites if i["id"] == b["inviteId"] and i["to"] == me), None)
+        if inv is None:
+            return fail(404, "party.invite.deny.notFound", "That invite could not be found.")
+        app.invites.remove(inv)
+        if not b["accept"]:
+            return ok(None)
+        app.parties.setdefault(inv["partyId"], {"id": inv["partyId"], "name": inv["partyName"], "type": "PUBLIC", "techType": "WEB",
+                                                "maxUsers": 8, "stage": "LOBBY", "startTime": "2026-10-07T00:00:00Z", "endTime": None,
+                                                "mapName": None, "gameMode": None, "hostId": "u2", "appId": 1, "serverId": None,
+                                                "members": ["u2"], "ready": set(), "password": None})["members"].append(me)
+        return ok({"partyId": inv["partyId"], "role": "MEMBER", "leftPartyId": None})
+    if route == "party/join" and method == "POST":
+        if not digits(b.get("id")):
+            return bad()
+        if b["id"] not in app.parties:
+            return fail(404, "party.join.deny.notFound", "That party could not be found.")
+        p = app.parties[b["id"]]
+        if p["type"] == "PUBLIC_PASSWORD" and b.get("password") != p["password"]:
+            return fail(403, "party.join.deny.password", "Wrong password.")
+        left = mine()
+        if left:
+            app.parties[left]["members"].remove(me)
+        p["members"].append(me)
+        return ok({"partyId": b["id"], "role": "MEMBER", "leftPartyId": left})
+    if route == "party/leave" and method == "POST":
+        if not known(b.get("id")) or me not in app.parties[b["id"]]["members"]:
+            return fail(404, "not_found", "Not found.")
+        p = app.parties[b["id"]]
+        p["members"].remove(me)
+        return ok({"left": True, "ended": not p["members"]})
+    if route == "party/kick" and method == "POST":
+        if not known(b.get("id")) or not isinstance(b.get("userId"), str):
+            return bad()
+        p = app.parties[b["id"]]
+        if p["hostId"] != me:
+            return fail(403, "party.kick.deny.notManager", "Only the host or a co-host can do that.")
+        if b["userId"] not in p["members"]:
+            return fail(404, "party.kick.deny.notMember", "They are not in this party.")
+        p["members"].remove(b["userId"])
+        return ok(None)
+    if route == "party/ready" and method == "POST":
+        if not known(b.get("id")):
+            return fail(404, "not_found", "Not found.")
+        p = app.parties[b["id"]]
+        (p["ready"].add if b.get("ready", True) else p["ready"].discard)(me)
+        return ok(ready_view(b["id"]))
+    if route == "party/start" and method == "POST":
+        if not known(b.get("id")):
+            return fail(404, "not_found", "Not found.")
+        p = app.parties[b["id"]]
+        if p["hostId"] != me:
+            return fail(403, "party.start.deny.notManager", "Only the host or a co-host can do that.")
+        if b.get("serverId") is not None:
+            p["serverId"] = b["serverId"]
+        if p["serverId"] is None:
+            return fail(400, "party.start.deny.noServer", "Pick a server first.")
+        p["stage"] = "PLAYING"
+        return ok(ready_view(b["id"]))
+
+    # installs
+    def install_view(iid: int) -> dict[str, Any]:
+        i = app.installs[iid]
+        return {**{k: v for k, v in i.items() if k != "owner"}, "items": sorted(i["items"], key=lambda x: x["order"])}
+
+    if route == "installs" and method == "GET":
+        app_id = q("appId")
+        return ok({"installs": [install_view(k) for k, i in app.installs.items()
+                                if i["owner"] == me and (app_id is None or str(i["appId"]) == app_id)]})
+    if route == "installs" and method == "POST":
+        if not isinstance(b.get("appId"), int) or not isinstance(b.get("name"), str) or not b["name"]:
+            return bad()
+        if b["appId"] != 1:
+            return fail(400, "app_unsupported", "The official app cannot manage installs for this game yet.")
+        iid = app.next()
+        first = not any(i["owner"] == me and i["appId"] == b["appId"] for i in app.installs.values())
+        app.installs[iid] = {"id": iid, "owner": me, "appId": b["appId"], "app": {"id": 1, "name": "Seed", "slug": "seed", "icon": None},
+                             "name": b["name"], "description": b.get("description"), "gameVersion": b.get("gameVersion"),
+                             "loader": b.get("loader"), "isDefault": b.get("isDefault", first),
+                             "strategy": b.get("strategy", "hardlink"), "environment": b.get("environment", "client"),
+                             "launchArgs": [], "launchEnv": {}, "options": {}, "createdAt": "2026-10-07", "updatedAt": "2026-10-07",
+                             "lastPlayedAt": None, "playSeconds": 0, "items": []}
+        return ok(install_view(iid), 201)
+    if route in ("installs", "installs/items") and method in ("PATCH", "DELETE", "POST"):
+        key = "id" if route == "installs" else "installId"
+        iid = b.get(key)
+        if not isinstance(iid, int):
+            return bad()
+        if iid not in app.installs or app.installs[iid]["owner"] != me:
+            return fail(404, "not_found", "That install does not exist.")
+        inst = app.installs[iid]
+        if route == "installs" and method == "DELETE":
+            del app.installs[iid]
+            return ok({"deleted": True})
+        if route == "installs":
+            for k in ("name", "description", "gameVersion", "loader", "strategy", "environment"):
+                if k in b:
+                    inst[k] = b[k]
+            if b.get("isDefault") is True:
+                inst["isDefault"] = True
+            return ok(install_view(iid))
+        if b.get("kind") not in ("asset", "mod", "collection") or not isinstance(b.get("itemId"), int):
+            return bad()
+        match = next((x for x in inst["items"] if x["kind"] == b["kind"] and x["itemId"] == b["itemId"]), None)
+        if method == "POST" and match is None:
+            inst["items"].append({"id": app.next(), "kind": b["kind"], "itemId": b["itemId"], "name": f"{b['kind']} {b['itemId']}",
+                                  "webUrl": "https://x", "image": None, "enabled": True, "order": len(inst["items"]),
+                                  "subscribed": (b["kind"], b["itemId"]) in app.subs})
+        elif method == "PATCH" and match is not None:
+            for k in ("enabled", "order"):
+                if k in b:
+                    match[k] = b[k]
+        elif method == "DELETE" and match is not None:
+            inst["items"].remove(match)
+        return ok(install_view(iid))
+
+    # subscriptions
+    if route == "subscriptions" and method == "GET":
+        items = [{"id": s["id"], "kind": k[0], "itemId": k[1], "name": f"{k[0]} {k[1]}", "description": None, "image": None,
+                  "webUrl": "https://x", "app": {"id": 1, "name": "Seed", "slug": "seed"}, "createdAt": "2026-10-07",
+                  "updatedAt": "2026-10-07", "autoUpdate": s["autoUpdate"], "notifyUpdates": s["notifyUpdates"],
+                  "paused": s["paused"], "viaCollectionId": None, "installable": True,
+                  "release": {"id": 9, "version": "1.0", "createdAt": "2026-10-07", "file": None}}
+                 for k, s in app.subs.items()]
+        return ok({"items": items, "removed": [], "revision": str(app.serial), "full": q("since") is None})
+    if route == "subscriptions" and method == "POST":
+        if b.get("kind") not in ("asset", "mod", "collection") or not isinstance(b.get("itemId"), int):
+            return bad()
+        key = (b["kind"], b["itemId"])
+        if b["itemId"] >= 1000:
+            return fail(404, "not_found", "That item is not available.")
+        want = b.get("subscribed", key not in app.subs)
+        if want:
+            app.subs.setdefault(key, {"id": f"s{app.next()}", "autoUpdate": True, "notifyUpdates": True, "paused": False})
+        else:
+            app.subs.pop(key, None)
+        return ok({"subscribed": want, "propagated": 0, "skipped": 0})
+    if route == "subscriptions/prefs" and method == "POST":
+        key = (b.get("kind"), b.get("itemId"))
+        if key not in app.subs:
+            return fail(404, "not_found", "You are not subscribed to that item.")
+        for k in ("autoUpdate", "notifyUpdates", "paused"):
+            if isinstance(b.get(k), bool):
+                app.subs[key][k] = b[k]
+        return ok({"ok": True})
+
+    # reviews/write
+    if route == "reviews/write" and method == "POST":
+        rating, content = b.get("rating"), b.get("content")
+        if not isinstance(b.get("id"), int) or (rating is not None and not (isinstance(rating, int) and 1 <= rating <= 5)):
+            return bad()
+        if rating is None and not (content or "").strip():
+            return bad("Give it a score, some words, or both.")
+        key = (b.get("kind"), b["id"])
+        edited = key in app.reviews
+        app.reviews[key] = {"id": app.reviews.get(key, {}).get("id") or app.next(), "rating": rating, "content": content, "owner": me}
+        return ok({"saved": True, "edited": edited, "held": False})
+    if route == "reviews/write" and method == "DELETE":
+        match = next((k for k, r in app.reviews.items() if r["id"] == b.get("id") and r["owner"] == me), None)
+        if match is None:
+            return fail(404, "not_found", "That review does not exist.")
+        del app.reviews[match]
+        return ok({"deleted": True})
+    if route == "reviews/write" and method == "PUT":
+        if not isinstance(b.get("id"), int) or "positive" not in b or b["positive"] not in (True, False, None):
+            return bad()
+        if any(r["id"] == b["id"] and r["owner"] == me for r in app.reviews.values()):
+            return fail(400, "own_review", "You cannot vote on your own review.")
+        return ok({"voted": b["positive"]})
+
+    # stats
+    if route in ("stats/top", "stats/me", "stats/defs") and method == "GET":
+        if not (q("app") or "").isdigit():
+            return fail(400, "invalid", "Say which app to read.")
+        game = app.stats.get(int(q("app") or 0))
+        if game is None:
+            return fail(404, "not_found", "No such app.")
+        if route == "stats/defs":
+            return ok([{"key": k, "name": k.title(), "description": None, "kind": "COUNTER", "unit": "", "decimals": 0, "players": len(v)}
+                       for k, v in sorted(game.items())])
+        if route == "stats/me":
+            return ok({"player": f"p-{me}", "name": APP_USERS[me]["name"],
+                       "stats": [{"key": k, "name": k.title(), "kind": "COUNTER", "unit": "", "decimals": 0, "value": dict(v)[me]}
+                                 for k, v in game.items() if me in dict(v)]})
+        stat = q("stat")
+        if stat not in game:
+            return fail(404, "not_found", "No such stat.")
+        offset, limit = int(q("offset") or 0), int(q("limit") or 25)
+        ranked = [{"rank": n + 1, "player": f"p-{u}", "name": APP_USERS[u]["name"], "value": v} for n, (u, v) in enumerate(game[stat])]
+        return ok({"stat": {"key": stat, "name": stat.title(), "kind": "COUNTER", "unit": "", "decimals": 0, "players": len(ranked)},
+                   "rows": ranked[offset:offset + limit], "self": next((r for r in ranked if r["player"] == f"p-{me}"), None)})
+
+    fail(404, "not_found", "Not found.")
+
+
+#: Built last: `State.reset` needs `AppUserState`, which is defined below `State`.
+STATE = State()

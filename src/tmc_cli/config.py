@@ -101,6 +101,12 @@ class Profile:
     jwt_lifetime_sec: int = 60
     #: Optional per-profile defaults, e.g. {"timeout": 60}.
     options: dict[str, Any] = field(default_factory=dict)
+    #: An app-user session from `tmc auth app-login` (the device flow), kept
+    #: beside the content credential rather than instead of it: the two are
+    #: different credential kinds for different APIs, and one profile is one
+    #: site. Keys: base_url, access_token, refresh_token, expires_at (epoch
+    #: seconds), user. See `app_api.py`.
+    app: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -123,6 +129,9 @@ class Profile:
         if self.options:
             out["options"] = self.options
 
+        if self.app:
+            out["app"] = self.app
+
         return out
 
     @classmethod
@@ -136,6 +145,7 @@ class Profile:
             private_key_path=raw.get("private_key_path"),
             jwt_lifetime_sec=int(raw.get("jwt_lifetime_sec") or 60),
             options=dict(raw.get("options") or {}),
+            app=dict(raw["app"]) if isinstance(raw.get("app"), dict) else None,
         )
 
     def credential(self) -> Credential:

@@ -400,6 +400,19 @@ class Transport:
                     "error": inner.get("message") or message,
                     "code": inner.get("code") if isinstance(inner.get("code"), str) else inner_data.get("code"),
                 }
+            elif (
+                isinstance(parsed, dict)
+                and parsed.get("ok") is False
+                and "error" not in parsed
+            ):
+                # What the app API actually sends: FLAT, `{ok:false, code,
+                # message, retryAfter?}` (`apiError` in website-city's
+                # `src/lib/app-api/handler.ts`). Reading only `error` printed
+                # "Request failed." for every one of its refusals.
+                parsed = {
+                    "error": parsed.get("message") or message,
+                    "code": parsed.get("code") if isinstance(parsed.get("code"), str) else None,
+                }
 
             if isinstance(parsed, dict):
                 message = str(parsed.get("error") or message)

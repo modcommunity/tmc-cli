@@ -322,6 +322,46 @@ tmc catalog lookup play.example.com --port 27015 # listed servers at an address
 Kinds are the app API's: `asset mod server serverMap article community
 collection user`. Ids on this surface are strings.
 
+## As yourself: friends, parties, installs, …
+
+The per-user half of the app API needs an **app-user session**, not a content
+key. `tmc auth app-login` gets one through the same device flow the desktop app
+uses: it prints a URL and a code, you approve it in a browser where you are
+signed in, and the session is saved in the profile beside any content key.
+
+```bash
+tmc auth app-login               # prints the URL + code, waits for approval
+tmc auth app-login --browser     # …and opens the URL
+tmc auth app-whoami              # GET /me
+tmc auth app-logout              # revokes the session server-side, then forgets it
+
+tmc friends list                 # with presence
+tmc friends requests | add USER | accept ID | decline ID | cancel ID | remove USER
+tmc presence get USER...         # friends only
+tmc presence set in_game --server 12 --joinable --detail "de_dust2"
+tmc party mine [--members]
+tmc party create --app 3 --name "Tonight" --max-users 8
+tmc party invite PARTY USER... | invites | accept INVITE | decline INVITE
+tmc party join PARTY [--password …] | leave PARTY | kick PARTY USER [--ban]
+tmc party ready PARTY [--not] | start PARTY [--server 12]
+tmc installs list | create --app 3 --name Main | update ID … | delete ID
+tmc installs items add|set|remove INSTALL mod 42 [--enable|--disable] [--order N]
+tmc subscriptions list | add mod 42 | remove mod 42
+tmc subscriptions prefs mod 42 --no-auto-update --paused
+tmc reviews write mod 42 --rating 5 --content "Works great"
+tmc reviews vote REVIEW up|down|clear | delete REVIEW
+tmc stats top 3 kills --limit 10 # a leaderboard, with your own rank
+tmc stats me 3 | defs 3
+```
+
+The access token lasts an hour and is renewed automatically with the refresh
+token (once per command: when it is past its expiry, or when the site answers
+`401`); if that fails too, the command says so and the session is dropped —
+run `app-login` again. A session is tied to the base URL it was issued by and is
+never sent to another one. `TMC_APP_TOKEN` supplies an access token directly
+(nothing is stored or refreshed). `tmc review` (singular) is still the content
+API's; `tmc reviews` writes as you.
+
 ## Network status (Defcon)
 
 `tmc defcon` reads the public half of Defcon, the network monitor — exactly
@@ -366,7 +406,8 @@ The tests run the real CLI against an in-process mock of the API over a real
 socket, covering both auth modes (including Ed25519 against RFC 8032 vectors and
 an openssl-generated key), the anonymous surface, batching, relation
 merge/replace semantics, the release workflow, the retry path, `open`, the
-public catalogue and Defcon (`tests/test_public.py`).
+public catalogue and Defcon (`tests/test_public.py`), and the app-user session:
+device login, refresh, and every per-user group (`tests/test_app_user.py`).
 
 ## Which address it talks to
 

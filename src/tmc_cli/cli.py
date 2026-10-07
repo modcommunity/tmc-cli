@@ -23,6 +23,7 @@ from typing import Any, Callable, Sequence
 from . import contract, output
 from .context import Context
 from .commands import (
+    appuser_cmd,
     auth_cmd,
     catalog_cmd,
     content_cmd,
@@ -354,6 +355,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_misc(sub)
     _build_catalog(sub)
     _build_defcon(sub)
+    _build_app_user(sub)
 
     return parser
 
@@ -419,6 +421,18 @@ def _build_auth(sub: Any) -> None:
     token.add_argument("--header", action="store_true", help="print the full header line")
 
     _leaf(ops, "doctor", "check crypto backend, config permissions and connectivity", auth_cmd.doctor)
+
+    # The app-user session: a second credential kind, held beside the content
+    # key in the same profile. See app_api.py.
+    app_login = _leaf(
+        ops,
+        "app-login",
+        "sign in as yourself (device flow) for friends, party, presence, installs, …",
+        appuser_cmd.login,
+    )
+    app_login.add_argument("--browser", action="store_true", help="open the approval page in a browser")
+    _leaf(ops, "app-logout", "revoke and forget the app-user session", appuser_cmd.logout)
+    _leaf(ops, "app-whoami", "who the app-user session is (GET /me)", appuser_cmd.me)
 
 
 def _build_contract(sub: Any) -> None:
@@ -883,6 +897,158 @@ def _build_defcon(sub: Any) -> None:
     mtr.add_argument("monitor", help="id, or (part of) its name")
 
 
+#: The groups that run as the app-user session (`tmc auth app-login`).
+APP_USER_GROUPS = ("friends", "party", "presence", "installs", "subscriptions", "reviews", "stats")
+
+
+def _build_app_user(sub: Any) -> None:
+    """The app API as the signed-in member. All of it needs `tmc auth app-login`."""
+
+    m = appuser_cmd
+    note = "Runs as your app-user session (tmc auth app-login), not the content key."
+
+    def group(name: str, help_: str) -> Any:
+        parser = sub.add_parser(name, help=help_, description=f"{help_}. {note}")
+        return parser.add_subparsers(dest=f"{name}_op", metavar="<op>", required=True)
+
+    # -- friends
+    ops = group("friends", "friends and friend requests")
+    _leaf(ops, "list", "your friends, with presence", m.friends_list)
+    _leaf(ops, "requests", "pending requests, both ways", m.friends_requests)
+    _leaf(ops, "add", "send a friend request", m.friends_add).add_argument("user_id")
+    _leaf(ops, "accept", "accept a request", m.friends_respond(True)).add_argument("request_id", type=int)
+    _leaf(ops, "decline", "decline a request", m.friends_respond(False)).add_argument("request_id", type=int)
+    _leaf(ops, "cancel", "withdraw a request you sent", m.friends_cancel).add_argument("request_id", type=int)
+    _leaf(ops, "remove", "unfriend", m.friends_remove).add_argument("user_id")
+
+    # -- party
+    ops = group("party", "parties")
+    _leaf(ops, "mine", "the party you are in", m.party_mine).add_argument("--members", action="store_true", help="list the roster")
+    show = _leaf(ops, "show", "one party", m.party_show)
+    show.add_argument("id")
+    show.add_argument("--members", action="store_true", help="list the roster")
+    create = _leaf(ops, "create", "host a new party", m.party_create)
+    create.add_argument("--app", type=int, required=True, help="game id")
+    create.add_argument("--name")
+    create.add_argument("--description")
+    create.add_argument("--type", choices=m.PARTY_TYPES)
+    create.add_argument("--max-users", type=int)
+    create.add_argument("--server", type=int, help="server id")
+    create.add_argument("--password", help="for --type PUBLIC_PASSWORD")
+    invite = _leaf(ops, "invite", "invite members", m.party_invite)
+    invite.add_argument("id")
+    invite.add_argument("user_ids", nargs="+", metavar="user_id")
+    invite.add_argument("--message")
+    _leaf(ops, "invites", "invites waiting for you", m.party_invites)
+    _leaf(ops, "accept", "accept an invite (and join)", m.party_respond(True)).add_argument("invite_id")
+    _leaf(ops, "decline", "decline an invite", m.party_respond(False)).add_argument("invite_id")
+    join = _leaf(ops, "join", "join a party", m.party_join)
+    join.add_argument("id")
+    join.add_argument("--password")
+    leave = _leaf(ops, "leave", "leave a party", m.party_leave)
+    leave.add_argument("id")
+    leave.add_argument("--silent", action="store_true", help="no '… left' chat line")
+    kick = _leaf(ops, "kick", "remove a member", m.party_kick)
+    kick.add_argument("id")
+    kick.add_argument("user_id")
+    kick.add_argument("--ban", action="store_true", help="and keep them out")
+    ready = _leaf(ops, "ready", "mark yourself ready", m.party_ready)
+    ready.add_argument("id")
+    ready.add_argument("--not", dest="not_ready", action="store_true", help="un-ready")
+    start = _leaf(ops, "start", "start the match", m.party_start)
+    start.add_argument("id")
+    start.add_argument("--server", type=int, help="set the server first")
+
+    # -- presence
+    ops = group("presence", "where your friends are, and where you are")
+    _leaf(ops, "get", "friends' presence", m.presence_get).add_argument("user_ids", nargs="+", metavar="user_id")
+    pset = _leaf(ops, "set", "post your own presence", m.presence_set)
+    pset.add_argument("status", choices=m.PRESENCE_STATUSES)
+    pset.add_argument("--server", type=int)
+    pset.add_argument("--party")
+    pset.add_argument("--joinable", action="store_true")
+    pset.add_argument("--detail")
+
+    # -- installs
+    ops = group("installs", "your game installs (sandboxes)")
+    _leaf(ops, "list", "your installs", m.installs_list).add_argument("--app", type=int, help="one game")
+
+    def install_fields(parser: argparse.ArgumentParser, *, create: bool) -> None:
+        parser.add_argument("--name", required=create)
+        parser.add_argument("--description")
+        parser.add_argument("--game-version")
+        parser.add_argument("--loader")
+        parser.add_argument("--strategy", choices=m.STRATEGIES)
+        parser.add_argument("--environment", choices=m.ENVIRONMENTS)
+        parser.add_argument("--default", action="store_true", help="make it the game's default")
+        parser.add_argument("--items", action="store_true", help="print its items")
+
+    create = _leaf(ops, "create", "add an install", m.installs_create)
+    create.add_argument("--app", type=int, required=True, help="game id")
+    install_fields(create, create=True)
+    update = _leaf(ops, "update", "change an install", m.installs_update)
+    update.add_argument("id", type=int)
+    install_fields(update, create=False)
+    _leaf(ops, "delete", "delete an install", m.installs_delete).add_argument("id", type=int)
+
+    items = ops.add_parser("items", help="the items in an install").add_subparsers(
+        dest="items_op", metavar="<op>", required=True
+    )
+
+    def item_target(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        parser.add_argument("install_id", type=int)
+        parser.add_argument("kind", choices=m.SUB_KINDS)
+        parser.add_argument("item_id", type=int)
+        return parser
+
+    item_target(_leaf(items, "add", "add an item", m.install_item("POST")))
+    iset = item_target(_leaf(items, "set", "enable/disable or reorder an item", m.install_item("PATCH")))
+    iset.add_argument("--enable", dest="enabled", action="store_true", default=None)
+    iset.add_argument("--disable", dest="enabled", action="store_false")
+    iset.add_argument("--order", type=int)
+    item_target(_leaf(items, "remove", "remove an item", m.install_item("DELETE")))
+
+    # -- subscriptions
+    ops = group("subscriptions", "what you keep on your devices")
+    slist = _leaf(ops, "list", "your subscriptions", m.subs_list)
+    slist.add_argument("--since", help="a previous revision: only what changed")
+    slist.add_argument("--limit", type=int)
+    for name, subscribed in (("add", True), ("remove", False)):
+        parser = _leaf(ops, name, f"{'subscribe to' if subscribed else 'unsubscribe from'} an item", m.subs_set(subscribed))
+        parser.add_argument("kind", choices=m.SUB_KINDS)
+        parser.add_argument("item_id", type=int)
+    prefs = _leaf(ops, "prefs", "auto-update, notify, pause", m.subs_prefs)
+    prefs.add_argument("kind", choices=m.SUB_KINDS)
+    prefs.add_argument("item_id", type=int)
+    prefs.add_argument("--auto-update", action=argparse.BooleanOptionalAction, default=None)
+    prefs.add_argument("--notify", action=argparse.BooleanOptionalAction, default=None)
+    prefs.add_argument("--paused", action=argparse.BooleanOptionalAction, default=None)
+
+    # -- reviews (writes; `catalog reviews` reads, `tmc review` is the content API's)
+    ops = group("reviews", "write, delete and vote on reviews as yourself")
+    write = _leaf(ops, "write", "leave or edit your review", m.review_write)
+    write.add_argument("kind", choices=m.REVIEW_KINDS)
+    write.add_argument("id", type=int)
+    write.add_argument("--rating", type=int, choices=range(1, 6), metavar="1-5")
+    body = write.add_mutually_exclusive_group()
+    body.add_argument("--content", help="markdown")
+    body.add_argument("--content-file", help="read the markdown from a file")
+    _leaf(ops, "delete", "delete your review", m.review_delete).add_argument("id", type=int)
+    vote = _leaf(ops, "vote", "mark a review helpful (or not)", m.review_vote)
+    vote.add_argument("id", type=int)
+    vote.add_argument("vote", choices=("up", "down", "clear"))
+
+    # -- stats
+    ops = group("stats", "game statistics and leaderboards")
+    top = _leaf(ops, "top", "a leaderboard", m.stats_top)
+    top.add_argument("app", type=int, help="game id")
+    top.add_argument("stat", help="stat key")
+    top.add_argument("--offset", type=int)
+    top.add_argument("--limit", type=int)
+    _leaf(ops, "me", "your values in one game", m.stats_me).add_argument("app", type=int, help="game id")
+    _leaf(ops, "defs", "the stats a game declares", m.stats_defs).add_argument("app", type=int, help="game id")
+
+
 def local_command_paths() -> set[tuple[str, ...]]:
     """Every command this build understands, as ('mod', 'list') tuples.
 
@@ -921,6 +1087,7 @@ def top_level_commands() -> list[str]:
     return sorted(
         list(TOP_LEVEL_TYPES)
         + ["auth", "contract", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "open", "completion", "catalog", "defcon"]
+        + list(APP_USER_GROUPS)
     )
 
 

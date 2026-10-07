@@ -12,14 +12,14 @@ as one of ITS tokens (`ResolveAppToken`), and a publishing credential is refused
 there with `403 wrong_credential` — so presenting the profile's key would break
 a read that needs no key at all. The per-user half
 of that API (friends, parties, installs, subscriptions, writing reviews) takes
-an app-user token this tool has no way to hold — see CLAUDE.md, Known gaps.
+an app-user token instead — `appuser_cmd.py` and `app_api.py`.
 """
 
 from __future__ import annotations
 
-import urllib.parse
 from typing import Any, Iterable
 
+from .. import app_api
 from ..context import Context
 from ..errors import UsageError
 
@@ -40,37 +40,14 @@ APP_TYPES = ("GAME", "GAME_SINGLEPLAYER", "GAME_ENGINE", "VOIP", "OTHER")
 #: `normalizeArrayFields`: these are lists even with one value.
 ARRAY_PARAMS = ("apps", "categories", "tags", "ids", "slugs", "countries", "adultAges")
 
-API = "/api/app/v1"
-
 #: The table's default; `--field` reaches the rest (webUrl, favorites, …).
 SUMMARY_COLUMNS = ("kind", "id", "name", "app", "owner", "downloads", "rating", "categories", "tags")
 
 
 def _get(ctx: Context, path: str, params: dict[str, Any]) -> Any:
-    """GET with the app API's query dialect: a list is a REPEATED key.
+    """GET with the app API's query dialect (`app_api.query_string`)."""
 
-    `encode_params` joins lists with commas, which the content API splits and
-    the app API does not — `parseQuery` there takes `?tags=1,2` as the one
-    string "1,2" and the schema then refuses it.
-    """
-
-    pairs: list[tuple[str, str]] = []
-
-    for key, value in params.items():
-        if value is None or value == [] or value == "":
-            continue
-
-        if isinstance(value, bool):
-            pairs.append((key, "true" if value else "false"))
-        elif isinstance(value, (list, tuple)):
-            pairs.extend((key, str(v)) for v in value)
-        else:
-            pairs.append((key, str(value)))
-
-    query = urllib.parse.urlencode(pairs)
-    target = f"{API}{path}" + (f"?{query}" if query else "")
-
-    return ctx.public_transport().request("GET", target).data
+    return ctx.public_transport().request("GET", app_api.target(path, params)).data
 
 
 def _name(ref: Any) -> Any:

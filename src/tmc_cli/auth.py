@@ -89,6 +89,26 @@ class BearerCredential(Credential):
         return f"bearer {redact(self.token)}"
 
 
+@dataclass
+class AppTokenCredential(Credential):
+    """An app-user access token (`tmc_at_…`) from the device flow.
+
+    Its own kind rather than a `BearerCredential` because it is a different
+    API's credential: `/api/app/v1` resolves it, `/api/content` does not know
+    it, and the debug log and `describe` should say which one went out.
+    """
+
+    token: str
+
+    kind = "app"
+
+    def authorization(self) -> str | None:
+        return f"Bearer {self.token}"
+
+    def describe(self) -> str:
+        return f"app user {redact(self.token)}"
+
+
 class JwtCredential(Credential):
     """A JWT-mode key: an Ed25519 private key that signs a fresh assertion."""
 

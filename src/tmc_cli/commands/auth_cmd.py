@@ -206,13 +206,24 @@ def list_profiles(ctx: Context) -> int:
             "site": profile.base_url,
             "mode": profile.auth_mode,
             "credential": profile.describe(),
+            # Who the app-user session (`auth app-login`) is; never the token.
+            "appUser": _app_user(profile),
         }
         for name, profile in sorted(config.profiles.items())
     ]
 
-    ctx.emit(rows, columns=("profile", "default", "site", "mode", "credential"))
+    ctx.emit(rows, columns=("profile", "default", "site", "mode", "credential", "appUser"))
 
     return 0
+
+
+def _app_user(profile: Profile) -> str:
+    if not profile.app:
+        return ""
+
+    user = profile.app.get("user") or {}
+
+    return str(user.get("username") or user.get("name") or user.get("id") or "(signed in)")
 
 
 def use_profile(ctx: Context) -> int:
