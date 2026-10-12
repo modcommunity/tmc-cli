@@ -370,6 +370,27 @@ class Handler(BaseHTTPRequestHandler):
                 self._app_api(parts[3:], parse_qs(parsed.query))
             return
 
+        # The address-only server listing (website-city `/api/content/server/list`):
+        # anonymous, paged by number, one row per address.
+        if method == "GET" and parts == ["api", "content", "server", "list"]:
+            self._read_body()
+            app = query.get("app") or query.get("appId")
+            if app not in (None, "seed", "1"):
+                self._json(404, {"error": "No such game.", "code": "unknown_app"})
+                return
+            rows = [
+                {"id": 703 + n, "host": "203.0.113.%d" % (7 + n), "port": 6060, "queryPort": None,
+                 "protocols": ["A2S"], "app": {"id": 1, "url": "seed"}}
+                for n in range(3)
+            ]
+            page = int(query.get("page") or 1)
+            limit = int(query.get("limit") or 2)
+            self._json(200, {
+                "data": rows[(page - 1) * limit:page * limit],
+                "pagination": {"page": page, "limit": limit, "total": len(rows), "totalPages": -(-len(rows) // limit)},
+            })
+            return
+
         # A GET with NO Authorization header at all is the unauthenticated
         # surface's, and it is branched to BEFORE auth — a request presenting a
         # credential, even a bad one, is never downgraded into an anonymous read.

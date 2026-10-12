@@ -317,6 +317,7 @@ tmc catalog facets mod                           # game/category ids to filter b
 tmc catalog reviews mod 42 --sort helpful
 tmc catalog games --search seed
 tmc catalog lookup play.example.com --port 27015 # listed servers at an address
+tmc catalog listing --app hungario --all          # the address-only server listing a game's browser reads
 ```
 
 Kinds are the app API's: `asset mod server serverMap article community

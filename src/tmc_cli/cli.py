@@ -855,6 +855,12 @@ def _build_catalog(sub: Any) -> None:
     lookup.add_argument("host", help="hostname or IP")
     lookup.add_argument("--port", type=int)
 
+    listing = _leaf(ops, "listing", "the address-only server listing a game's server browser reads", catalog_cmd.listing)
+    listing.add_argument("--app", help="game id or url slug")
+    listing.add_argument("--page", type=int, help="page number (1 first)")
+    listing.add_argument("--limit", type=int, help="page size (the site caps it at api.anon.serverListMax)")
+    listing.add_argument("--all", action="store_true", help="every page")
+
 
 def _build_defcon(sub: Any) -> None:
     defcon = sub.add_parser(

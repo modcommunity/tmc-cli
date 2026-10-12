@@ -131,6 +131,20 @@ class TestCatalog(CliTestCase):
         self.assertEqual([s["id"] for s in servers], ["5"])
         self.assert_no_credential()
 
+    def test_server_listing(self) -> None:
+        first = json.loads(self.run_cli("catalog", "listing", "--app", "seed", "-o", "json"))
+        self.assertEqual([r["id"] for r in first], [703, 704])
+        self.assertEqual((first[0]["host"], first[0]["protocols"], first[0]["app"]["url"]), ("203.0.113.7", ["A2S"], "seed"))
+        table = self.run_cli("catalog", "listing", "-o", "csv")
+        self.assertIn("703,203.0.113.7,6060,,A2S,seed", table)
+
+        every = json.loads(self.run_cli("catalog", "listing", "--all", "-o", "json"))
+        self.assertEqual([r["id"] for r in every], [703, 704, 705])
+        self.assert_no_credential()
+
+        err = self.run_cli_err("catalog", "listing", "--app", "nope", expect=4)
+        self.assertIn("No such game.", err)
+
 
 class TestDefcon(CliTestCase):
     def test_status_summary_and_check(self) -> None:

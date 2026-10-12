@@ -310,3 +310,56 @@ def lookup(ctx: Context) -> int:
     ctx.emit(servers if _raw(ctx) else [_summary_row(s) for s in servers], columns=SUMMARY_COLUMNS)
 
     return 0
+
+
+#: A listing row's columns: an address and nothing about a person.
+LISTING_COLUMNS = ("id", "host", "port", "queryPort", "protocols", "app")
+
+
+def listing(ctx: Context) -> int:
+    """The address-only server listing game browsers read: `/api/content/server/list`.
+
+    The content API's anonymous surface rather than the app API, so it is asked
+    with no credential like the rest of `tmc catalog` and counts against the
+    same per-address quota. Pages by number (`page`/`totalPages`), not cursor.
+    """
+
+    args = ctx.args
+    params: dict[str, Any] = {"limit": args.limit}
+    if args.app:
+        params["appId" if str(args.app).isdigit() else "app"] = args.app
+
+    rows: list[Any] = []
+    page = args.page or 1
+    pagination: dict[str, Any] | None = None
+
+    while True:
+        response = ctx.public_transport().request(
+            "GET", "/api/content/server/list?" + app_api.query_string({**params, "page": page})
+        )
+        rows.extend(response.data or [])
+        pagination = response.pagination
+        pages = int((pagination or {}).get("totalPages") or 1)
+
+        if not args.all or page >= pages:
+            break
+
+        page += 1
+
+    if _raw(ctx):
+        ctx.emit(rows, columns=LISTING_COLUMNS, pagination=None if args.all else pagination)
+    else:
+        ctx.emit(
+            [
+                {
+                    **{k: r.get(k) for k in ("id", "host", "port", "queryPort")},
+                    "protocols": ",".join(r.get("protocols") or []),
+                    "app": (r.get("app") or {}).get("url"),
+                }
+                for r in rows
+            ],
+            columns=LISTING_COLUMNS,
+            pagination=None if args.all else pagination,
+        )
+
+    return 0

@@ -4,7 +4,7 @@
 
 Both go through `Context.public_transport()`, an anonymous `Transport`; the profile's secret is never sent.
 
-**`tmc catalog`** reads `/api/app/v1/{browse,content/<kind>/<id>,facets,reviews,apps,servers/lookup}` on the API origin.
+**`tmc catalog`** reads `/api/app/v1/{browse,content/<kind>/<id>,facets,reviews,apps,servers/lookup}` on the API origin. `tmc catalog listing` is the one read from the content API instead: `/api/content/server/list`, the anonymous address-only server listing a game's server browser starts from (paged by number; same per-address quota as every anonymous read).
 
 - These routes are `auth: 'optional'`, but a `Bearer` that is sent is resolved as an app token (`ResolveAppToken`), and a publishing (`CLI`) credential is refused `403 wrong_credential`, so sending the profile's key would break reads that need none.
 - List params are repeated keys (`parseQuery` + `normalizeArrayFields`), not the comma form `encode_params` uses for `/api/content`; `app_api.query_string` builds that dialect.
