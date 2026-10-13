@@ -1,5 +1,6 @@
 """The app API as the signed-in member: device login, then friends, parties,
-presence, installs, subscriptions, review writes and stats.
+presence, installs, subscriptions, review writes, stats, account settings,
+downloads, avatar and reports.
 
 Every route here is website-city `src/app/api/app/v1/<path>/route.ts`, and every
 body is spelled as that route's zod schema spells it (`src/types/app-api/
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import socket
 import sys
@@ -32,6 +34,17 @@ SUB_KINDS = ("asset", "mod", "collection")
 PRESENCE_STATUSES = ("offline", "online", "in_game", "away")
 #: `PartyTypeVals`.
 PARTY_TYPES = ("PUBLIC", "PUBLIC_PASSWORD", "FRIENDS", "PRIVATE")
+#: `PartySetMemberRoleInput.role`; `HOST` is `party transfer`, not a role change.
+PARTY_ROLES = {"co-host": "CO_HOST", "member": "MEMBER"}
+#: `ReportKindVals`.
+REPORT_TYPES = ("SPAM", "OTHER")
+#: `UserSettingsSchema`: two strings, the rest switches. PATCH takes any subset.
+SETTING_STRINGS = {"timezone": 64, "locale": 16}
+SETTING_SWITCHES = (
+    "emailNotifications", "pushNotifications", "notifySystem", "notifyComments", "notifyReviews",
+    "notifyReleases", "notifyMentions", "notifyModeration", "notifyCredits", "notifyFriends",
+    "notifyFollowers", "notifyMessages", "notifyStatus", "notifyParties", "notifyGroups",
+)
 #: `DeployStrategyVals` / `SandboxEnvVals`.
 STRATEGIES = ("direct", "hardlink", "symlink", "usvfs")
 ENVIRONMENTS = ("client", "server", "shared")
@@ -533,6 +546,223 @@ def party_start(ctx: Context) -> int:
         body["serverId"] = ctx.args.server
 
     _ready_out(ctx, _session(ctx).request("POST", "/party/start", json_body=body))
+
+    return 0
+
+
+def party_round(ctx: Context) -> int:
+    # `GET party/{id}/ready`: a GET that may fire a lapsed auto-start, exactly as
+    # the website's `ready.state` does; idempotent, so harmless to repeat.
+    _ready_out(ctx, _session(ctx).request("GET", f"/party/{ctx.args.id}/ready"))
+
+    return 0
+
+
+def party_manage(route: str, done: str, *, ask: str | None = None):
+    """`{ id }` → `null` routes for a party's managers: cancel, end, force-start."""
+
+    def run(ctx: Context) -> int:
+        pid = ctx.args.id
+
+        if ask and not ctx.confirm(ask.format(id=pid)):
+            return 1
+
+        _session(ctx).request("POST", f"/party/{route}", json_body={"id": pid})
+        ctx.done(done.format(id=pid))
+
+        return 0
+
+    return run
+
+
+def party_role(ctx: Context) -> int:
+    args = ctx.args
+    body = {"id": args.id, "userId": args.user_id, "role": PARTY_ROLES[args.role]}
+    _session(ctx).request("POST", "/party/role", json_body=body)
+    ctx.done(f"{args.user_id} is now {args.role} of party {args.id}.")
+
+    return 0
+
+
+def party_transfer(ctx: Context) -> int:
+    args = ctx.args
+
+    if not ctx.confirm(f"Hand party {args.id} to {args.user_id}? You stop being its host."):
+        return 1
+
+    _session(ctx).request("POST", "/party/transfer", json_body={"id": args.id, "userId": args.user_id})
+    ctx.done(f"{args.user_id} hosts party {args.id} now.")
+
+    return 0
+
+
+RESERVATION_COLUMNS = ("id", "status", "private", "startsAt", "endsAt", "partyId", "server", "note")
+
+
+def _reservation_out(ctx: Context, row: Any) -> None:
+    if _raw(ctx) or not isinstance(row, dict):
+        ctx.emit(row)
+        return
+
+    server = row.get("server") or {}
+    ctx.emit({**{k: row.get(k) for k in RESERVATION_COLUMNS}, "server": server.get("name") or server.get("id")})
+
+
+def party_reserve(ctx: Context) -> int:
+    args = ctx.args
+    body: dict[str, Any] = {"partyId": args.id, "serverId": args.server, "minutes": args.minutes, "private": bool(args.private)}
+
+    if args.note is not None:
+        body["note"] = args.note
+
+    row = _session(ctx).request("POST", "/party/reserve", json_body=body)
+    _reservation_out(ctx, row)
+
+    if isinstance(row, dict) and row.get("status") == "PENDING":
+        ctx.note("Pending: the server's owner approves bookings by hand.")
+
+    return 0
+
+
+def party_reserve_cancel(ctx: Context) -> int:
+    if not ctx.confirm(f"Cancel reservation {ctx.args.reservation_id}?"):
+        return 1
+
+    row = _session(ctx).request("POST", "/party/reserve/cancel", json_body={"reservationId": ctx.args.reservation_id})
+    _reservation_out(ctx, row)
+
+    return 0
+
+
+def party_offer(ctx: Context) -> int:
+    data = _session(ctx).request("GET", f"/party/{ctx.args.id}/reserve/offer", params={"serverId": ctx.args.server})
+    ctx.emit(data)
+
+    return 0
+
+
+# ---- account: settings, downloads, avatar -----------------------------------
+
+
+def account_settings(ctx: Context) -> int:
+    data = _session(ctx).request("GET", "/me") or {}
+    settings = data.get("settings") or {}
+
+    ctx.emit(settings if _raw(ctx) else [{"key": k, "value": v} for k, v in settings.items()], columns=("key", "value"))
+
+    return 0
+
+
+def _setting(pair: str) -> tuple[str, Any]:
+    key, sep, value = pair.partition("=")
+    key = key.strip()
+
+    if not sep:
+        raise UsageError(f"Expected key=value, got '{pair}'.")
+
+    if key in SETTING_STRINGS:
+        if len(value) > SETTING_STRINGS[key]:
+            raise UsageError(f"{key} is at most {SETTING_STRINGS[key]} characters.")
+        return key, value
+
+    if key in SETTING_SWITCHES:
+        word = value.strip().lower()
+
+        if word in ("true", "on", "yes", "1"):
+            return key, True
+
+        if word in ("false", "off", "no", "0"):
+            return key, False
+
+        raise UsageError(f"{key} is a switch: true or false.")
+
+    raise UsageError(
+        f"Unknown setting '{key}'.",
+        hint="One of: " + ", ".join([*SETTING_STRINGS, *SETTING_SWITCHES]),
+    )
+
+
+def account_set(ctx: Context) -> int:
+    # A partial, as the route wants: only what is named here is sent, so another
+    # device's change to a different switch is not overwritten with a stale one.
+    body = dict(_setting(pair) for pair in ctx.args.pairs)
+    settings = _session(ctx).request("PATCH", "/me", json_body=body) or {}
+
+    ctx.emit(settings if _raw(ctx) else [{"key": k, "value": settings.get(k)} for k in body], columns=("key", "value"))
+
+    return 0
+
+
+DOWNLOAD_COLUMNS = ("deviceName", "isThisDevice", "active", "queued", "paused", "failed", "finished", "speedBps", "remainingBytes", "updatedAt")
+
+
+def account_downloads(ctx: Context) -> int:
+    data = _session(ctx).request("GET", "/downloads") or {}
+
+    if _raw(ctx):
+        ctx.emit(data)
+        return 0
+
+    devices = data.get("devices") or []
+
+    if getattr(ctx.args, "items", False):
+        ctx.emit(
+            [{"deviceName": d.get("deviceName"), **i} for d in devices for i in d.get("items") or [] if isinstance(i, dict)],
+        )
+    else:
+        ctx.emit([{k: d.get(k) for k in DOWNLOAD_COLUMNS} for d in devices], columns=DOWNLOAD_COLUMNS)
+
+    return 0
+
+
+def account_avatar(ctx: Context) -> int:
+    ctx.emit(_session(ctx).request("GET", "/avatar"))
+
+    return 0
+
+
+def account_avatar_set(ctx: Context) -> int:
+    path = ctx.args.file
+
+    try:
+        if path == "-":
+            doc = json.load(sys.stdin)
+        else:
+            with open(path, "r", encoding="utf-8") as handle:
+                doc = json.load(handle)
+    except (OSError, ValueError) as err:
+        raise UsageError(f"Could not read an avatar document from {path}: {err}") from None
+
+    if not isinstance(doc, dict):
+        raise UsageError("An avatar document is a JSON object (what `tmc account avatar -o json` prints).")
+
+    ctx.emit(_session(ctx).request("PUT", "/avatar", json_body=doc))
+
+    return 0
+
+
+# ---- report -----------------------------------------------------------------
+
+
+def report(ctx: Context) -> int:
+    args = ctx.args
+    content = args.content
+
+    if args.content_file:
+        with open(args.content_file, "r", encoding="utf-8") as handle:
+            content = handle.read()
+
+    # `ReportCreateRequest`: title 3..120, content 10..4000. Said here rather than
+    # spending one of the ten reports an hour the route allows on a refusal.
+    if not 3 <= len(args.title) <= 120:
+        raise UsageError("--title is 3 to 120 characters.")
+
+    if not content or not 10 <= len(content) <= 4000:
+        raise UsageError("--content is 10 to 4000 characters.")
+
+    body = {"kind": args.kind, "id": args.id, "type": args.type, "title": args.title, "content": content}
+    ctx.emit(_session(ctx).request("POST", "/report", json_body=body))
+    ctx.done(f"Reported {args.kind} {args.id}.")
 
     return 0
 

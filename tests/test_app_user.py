@@ -376,5 +376,129 @@ class TestGroups(AppUserCase):
         self.assertIn("No such stat.", err)
 
 
+class TestMoreRoutes(AppUserCase):
+    """The routes added after the first cut: party management and booking,
+    synced settings, downloads, avatar, report."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.login()
+        self.pid = self.j("party", "create", "--app", "1", "--name", "Ann's")["id"]
+        STATE.app.parties[self.pid]["members"] += ["u2", "u3"]
+
+    def test_party_management(self) -> None:
+        pid = self.pid
+        party = STATE.app.parties[pid]
+
+        round_ = self.j("party", "round", pid)
+        self.assertEqual((round_["stage"], round_["total"], round_["me"]["canManage"]), ("LOBBY", 3, True))
+
+        err = self.run_cli_err("party", "force-start", pid, expect=5)
+        self.assertIn("party.forceStart.deny.noServer", err)
+        party["serverId"] = 7
+        self.run_cli("party", "force-start", pid)
+        self.assertEqual(party["stage"], "PLAYING")
+
+        err = self.run_cli_err("party", "cancel", pid, expect=1)
+        self.assertIn("no ready round", err)
+        party["stage"] = "READY"
+        self.run_cli("party", "cancel", pid)
+        self.assertEqual(party["stage"], "LOBBY")
+
+        self.run_cli("party", "role", pid, "u2", "co-host")
+        self.assertEqual(party["cohosts"], {"u2"})
+        self.run_cli("party", "role", pid, "u2", "member")
+        self.assertEqual(party["cohosts"], set())
+        self.run_cli_err("party", "role", pid, "u2", "host", expect=2)  # transfer is its own command
+
+        self.run_cli("party", "transfer", pid, "u3")
+        self.assertEqual(party["hostId"], "u3")
+        err = self.run_cli_err("party", "end", pid, expect=3)
+        self.assertIn("party.end.deny.notManager", err)
+        err = self.run_cli_err("party", "transfer", pid, "u2", expect=3)
+        self.assertIn("party.transfer.deny.notHost", err)
+
+        party["hostId"] = "u1"
+        self.run_cli("party", "end", pid)
+        self.assertEqual(party["stage"], "ENDED")
+
+    def test_party_end_asks_first(self) -> None:
+        args = ["--base-url", self.server.base_url, "party", "end", self.pid]
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(args), 1)
+        self.assertEqual(STATE.app.parties[self.pid]["stage"], "LOBBY")
+
+    def test_party_reserve(self) -> None:
+        pid = self.pid
+        offer = self.j("party", "offer", pid, "--server", "7")
+        self.assertTrue(offer["available"])
+        self.assertIn(f"/party/{pid}/reserve/offer?serverId=7", STATE.requests[-1][1])
+
+        row = self.rows("party", "reserve", pid, "--server", "7", "--minutes", "60", "--note", "scrim")[0]
+        self.assertEqual((row["status"], row["server"], row["note"], row["partyId"]), ("APPROVED", "Server 7", "scrim", pid))
+
+        _out, err = self.run_both("party", "reserve", pid, "--server", "8", "--minutes", "30")
+        self.assertIn("approves bookings by hand", err)
+
+        err = self.run_cli_err("party", "reserve", pid, "--server", "7", "--minutes", "60", "--private", expect=5)
+        self.assertIn("party.reserve.deny.private", err)
+        self.run_cli_err("party", "reserve", pid, "--server", "7", "--minutes", "2", expect=5)
+
+        cancelled = self.j("party", "reserve-cancel", row["id"])
+        self.assertEqual(cancelled["status"], "CANCELLED")
+        self.run_cli_err("party", "reserve-cancel", "99999", expect=4)
+
+    def test_account_settings(self) -> None:
+        settings = self.j("account", "settings")
+        self.assertEqual((settings["timezone"], settings["notifyParties"]), ("UTC", True))
+
+        rows = self.rows("account", "set", "notifyParties=off", "timezone=Europe/Berlin")
+        self.assertEqual(rows, [{"key": "notifyParties", "value": False}, {"key": "timezone", "value": "Europe/Berlin"}])
+        # A partial: only what was named goes over the wire.
+        self.assertEqual(STATE.app.settings["u1"], {"notifyParties": False, "timezone": "Europe/Berlin"})
+        self.assertFalse(self.j("account", "settings")["notifyParties"])
+
+        err = self.run_cli_err("account", "set", "notifyParties=maybe", expect=2)
+        self.assertIn("switch", err)
+        err = self.run_cli_err("account", "set", "theme=dark", expect=2)
+        self.assertIn("Unknown setting", err)
+
+    def test_account_downloads(self) -> None:
+        row = self.rows("account", "downloads")[0]
+        self.assertEqual((row["deviceName"], row["isThisDevice"], row["remainingBytes"]), ("Desktop", False, 5000000000))
+        item = self.rows("account", "downloads", "--items")[0]
+        self.assertEqual((item["deviceName"], item["name"]), ("Desktop", "Big Pack"))
+
+    def test_account_avatar(self) -> None:
+        self.assertEqual(self.j("account", "avatar")["schema_id"], "backbone.v1")
+
+        path = os.path.join(self.config_dir, "avatar.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"schema_id": "backbone.v1", "parts": {"hair": "short"}}, handle)
+        self.assertEqual(self.j("account", "avatar-set", path)["parts"], {"hair": "short"})
+        self.assertEqual(self.j("account", "avatar")["parts"], {"hair": "short"})
+
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"schema_id": "other.v2"}, handle)
+        err = self.run_cli_err("account", "avatar-set", path, expect=1)
+        self.assertIn("schema_mismatch", err)
+
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("[1]")
+        self.run_cli_err("account", "avatar-set", path, expect=2)
+
+    def test_report(self) -> None:
+        argv = ("report", "mod", "5", "--type", "spam", "--title", "Spam mod", "--content", "Links to a scam site.")
+        self.assertEqual(self.j(*argv), {"reported": True})
+        self.assertEqual(STATE.app.reports[0]["type"], "SPAM")
+        self.j(*argv)  # a duplicate answers success, files nothing
+        self.assertEqual(len(STATE.app.reports), 1)
+
+        self.run_cli_err("report", "mod", "5", "--title", "No", "--content", "Links to a scam site.", expect=2)
+        self.run_cli_err("report", "mod", "5", "--title", "Short", "--content", "short", expect=2)
+        err = self.run_cli_err("report", "mod", "1234", "--title", "Gone", "--content", "Links to a scam site.", expect=4)
+        self.assertIn("does not exist", err)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,7 +22,7 @@ src/tmc_cli/
   output.py            table/json/csv/yaml rendering
   commands/            one module per surface (catalog_cmd: app API public reads;
                        defcon_cmd: status data; appuser_cmd: device login and the
-                       per-member routes; release_cmd, relation_cmd, contract_cmd, …)
+                       per-member routes, game-client-only ones excluded; release_cmd, relation_cmd, contract_cmd, …)
 scripts/schema-drift.py  registry drift against a website-city checkout
 tests/
   mock_server.py       in-memory stand-in for /api/content, the app API (public and
@@ -68,5 +68,5 @@ Neither drift check (`tmc contract drift`, `scripts/schema-drift.py`) belongs in
 | Read | Before |
 | --- | --- |
 | [docs/contract.md](docs/contract.md) | Touching `schema.py`, `contract.py`, the drift script, or anything the web console shares |
-| [docs/surfaces.md](docs/surfaces.md) | Working on `catalog`, `defcon`, the app-user commands, or the integration API gap |
+| [docs/surfaces.md](docs/surfaces.md) | Working on `catalog`, `defcon`, the app-user commands (and which app routes are deliberately not commands), or the integration API gap |
 | [docs/behaviours.md](docs/behaviours.md) | Changing transport, auth, retries, batching, `--anon`, release publishing, or the mock |

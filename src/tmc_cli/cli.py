@@ -904,7 +904,7 @@ def _build_defcon(sub: Any) -> None:
 
 
 #: The groups that run as the app-user session (`tmc auth app-login`).
-APP_USER_GROUPS = ("friends", "party", "presence", "installs", "subscriptions", "reviews", "stats")
+APP_USER_GROUPS = ("friends", "party", "presence", "installs", "subscriptions", "reviews", "stats", "account", "report")
 
 
 def _build_app_user(sub: Any) -> None:
@@ -964,6 +964,28 @@ def _build_app_user(sub: Any) -> None:
     start = _leaf(ops, "start", "start the match", m.party_start)
     start.add_argument("id")
     start.add_argument("--server", type=int, help="set the server first")
+    _leaf(ops, "round", "the ready round: who is ready, the countdown", m.party_round).add_argument("id")
+    # Managers (host / co-host / staff), as the site's party page offers them.
+    _leaf(ops, "force-start", "start without waiting for everyone", m.party_manage("force-start", "Party {id} started.")).add_argument("id")
+    _leaf(ops, "cancel", "abandon the ready round, back to the lobby", m.party_manage("cancel", "Ready round of party {id} cancelled.")).add_argument("id")
+    _leaf(ops, "end", "end the party for everyone", m.party_manage("end", "Party {id} ended.", ask="End party {id} for everyone?")).add_argument("id")
+    role = _leaf(ops, "role", "make a member co-host, or back to member", m.party_role)
+    role.add_argument("id")
+    role.add_argument("user_id")
+    role.add_argument("role", choices=tuple(m.PARTY_ROLES))
+    transfer = _leaf(ops, "transfer", "hand the party to another member (host only)", m.party_transfer)
+    transfer.add_argument("id")
+    transfer.add_argument("user_id")
+    offer = _leaf(ops, "offer", "whether a server takes a booking for this party, and on what terms", m.party_offer)
+    offer.add_argument("id")
+    offer.add_argument("--server", type=int, required=True, help="server id")
+    reserve = _leaf(ops, "reserve", "book a server for the party", m.party_reserve)
+    reserve.add_argument("id")
+    reserve.add_argument("--server", type=int, required=True, help="server id")
+    reserve.add_argument("--minutes", type=int, required=True, help="5 to 1440; the server may shorten it")
+    reserve.add_argument("--private", action="store_true", help="ask for a locked lobby")
+    reserve.add_argument("--note")
+    _leaf(ops, "reserve-cancel", "cancel (or end) a booking", m.party_reserve_cancel).add_argument("reservation_id")
 
     # -- presence
     ops = group("presence", "where your friends are, and where you are")
@@ -1053,6 +1075,29 @@ def _build_app_user(sub: Any) -> None:
     top.add_argument("--limit", type=int)
     _leaf(ops, "me", "your values in one game", m.stats_me).add_argument("app", type=int, help="game id")
     _leaf(ops, "defs", "the stats a game declares", m.stats_defs).add_argument("app", type=int, help="game id")
+
+    # -- account (the parts of /me, downloads and avatar a member manages by hand)
+    ops = group("account", "your synced settings, downloads in progress, avatar")
+    _leaf(ops, "settings", "your synced settings", m.account_settings)
+    aset = _leaf(ops, "set", "change synced settings (only those named)", m.account_set)
+    aset.add_argument("pairs", nargs="+", metavar="key=value", help="e.g. notifyParties=false timezone=Europe/Berlin")
+    _leaf(ops, "downloads", "what each signed-in app device is downloading", m.account_downloads).add_argument(
+        "--items", action="store_true", help="one row per item instead of per device"
+    )
+    _leaf(ops, "avatar", "your avatar document", m.account_avatar)
+    _leaf(ops, "avatar-set", "publish an avatar document", m.account_avatar_set).add_argument(
+        "file", help="JSON file (as `tmc account avatar -o json` prints), or - for stdin"
+    )
+
+    # -- report (one command, not a group)
+    rep = _leaf(sub, "report", f"report an item to the moderators. {note}", m.report)
+    rep.add_argument("kind", choices=m.REVIEW_KINDS)
+    rep.add_argument("id", type=int)
+    rep.add_argument("--type", type=str.upper, choices=m.REPORT_TYPES, default="OTHER")
+    rep.add_argument("--title", required=True, help="3 to 120 characters")
+    text = rep.add_mutually_exclusive_group(required=True)
+    text.add_argument("--content", help="what is wrong, 10 to 4000 characters")
+    text.add_argument("--content-file", help="read it from a file")
 
 
 def local_command_paths() -> set[tuple[str, ...]]:

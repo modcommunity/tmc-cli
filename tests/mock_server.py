@@ -1154,12 +1154,19 @@ class MockServer:
 #   - `auth/refresh` ROTATES: the old refresh token is retired, and presenting a
 #     retired one revokes the family (`token_reuse`), as `RotateAppToken` does.
 
-APP_USER_ROOTS = {"auth", "me", "friends", "party", "presence", "installs", "subscriptions", "stats"}
+APP_USER_ROOTS = {"auth", "me", "friends", "party", "presence", "installs", "subscriptions", "stats", "downloads", "avatar", "report"}
 
 APP_USERS = {
     "u1": {"id": "u1", "name": "Ann", "username": "ann", "avatar": None, "role": "USER"},
     "u2": {"id": "u2", "name": "Bob", "username": "bob", "avatar": None, "role": "USER"},
     "u3": {"id": "u3", "name": "Cat", "username": "cat", "avatar": None, "role": "USER"},
+}
+
+SETTINGS_DEFAULT: dict[str, Any] = {
+    "timezone": "UTC", "locale": "en",
+    **{k: True for k in ("emailNotifications", "pushNotifications", "notifySystem", "notifyComments", "notifyReviews",
+                         "notifyReleases", "notifyMentions", "notifyModeration", "notifyCredits", "notifyFriends",
+                         "notifyFollowers", "notifyMessages", "notifyStatus", "notifyParties", "notifyGroups")},
 }
 
 OFFLINE = {"status": "offline", "appId": None, "appName": None, "serverId": None, "serverName": None,
@@ -1188,6 +1195,16 @@ class AppUserState:
         self.subs: dict[tuple[str, int], dict[str, Any]] = {}
         self.reviews: dict[tuple[str, int], dict[str, Any]] = {}
         self.stats = {1: {"kills": [("u2", 50.0), ("u1", 30.0), ("u3", 10.0)]}}
+        #: `UserSettingsSchema`, per user; PATCH merges a partial into it.
+        self.settings: dict[str, dict[str, Any]] = {}
+        self.downloads = {"u1": [
+            {"deviceName": "Desktop", "tokenId": "other", "active": 1, "queued": 2, "paused": 0, "failed": 0, "finished": 3,
+             "speedBps": 1048576, "remainingBytes": 5000000000, "items": [{"name": "Big Pack", "progress": 0.4}],
+             "updatedAt": "2026-10-13T08:00:00Z"},
+        ]}
+        self.avatars: dict[str, dict[str, Any]] = {}
+        self.reports: list[dict[str, Any]] = []
+        self.reservations: dict[str, dict[str, Any]] = {}
 
     def next(self) -> int:
         self.serial += 1
@@ -1292,8 +1309,48 @@ def _app_user(h: "Handler", method: str, route: str, query: dict[str, list[str]]
         app.revoked += 1
         return ok({"revoked": True})
 
+    def settings() -> dict[str, Any]:
+        return {**SETTINGS_DEFAULT, **app.settings.get(me, {})}
+
     if route == "me" and method == "GET":
-        return ok({"user": APP_USERS[me], "settings": {}, "serverTime": int(time.time())})
+        return ok({"user": APP_USERS[me], "settings": settings(), "serverTime": int(time.time())})
+    if route == "me" and method == "PATCH":
+        # `UserSettingsPatchSchema` is a zod object: an unknown key is stripped,
+        # a wrong type is a 400.
+        for k, v in b.items():
+            if k in SETTINGS_DEFAULT and type(v) is not type(SETTINGS_DEFAULT[k]):
+                return bad(f"Expected {type(SETTINGS_DEFAULT[k]).__name__} for {k}")
+        app.settings.setdefault(me, {}).update({k: v for k, v in b.items() if k in SETTINGS_DEFAULT})
+        return ok(settings())
+
+    # downloads: GET only from a terminal; POST/DELETE are the app's reports.
+    if route == "downloads" and method == "GET":
+        return ok({"devices": [{**{k: v for k, v in d.items() if k != "tokenId"}, "isThisDevice": d["tokenId"] == bearer}
+                               for d in app.downloads.get(me, [])]})
+
+    # avatar: the caller's own
+    if route == "avatar" and method == "GET":
+        return ok(app.avatars.get(me, {"version": 1, "schema_id": "backbone.v1", "parts": {}, "colours": {}}))
+    if route == "avatar" and method == "PUT":
+        if b.get("schema_id", "backbone.v1") != "backbone.v1":
+            return fail(409, "schema_mismatch", "That document is for another avatar schema.")
+        app.avatars[me] = {"version": 1, "schema_id": "backbone.v1", **b}
+        return ok(app.avatars[me])
+
+    # report: one open report per (member, item); a second answers success.
+    if route == "report" and method == "POST":
+        if b.get("kind") not in ("asset", "mod", "server", "serverMap", "article", "community", "collection", "user") \
+                or not isinstance(b.get("id"), int) or b.get("type", "OTHER") not in ("SPAM", "OTHER") \
+                or not 3 <= len(b.get("title") or "") <= 120 or not 10 <= len(b.get("content") or "") <= 4000:
+            return bad()
+        if b["kind"] == "collection":
+            return fail(400, "unsupported_kind", "That kind of item cannot be reported here.")
+        if b["id"] >= 1000:
+            return fail(404, "not_found", "That item does not exist.")
+        if any(r["kind"] == b["kind"] and r["id"] == b["id"] and r["owner"] == me for r in app.reports):
+            return ok({"reported": True})
+        app.reports.append({**b, "owner": me})
+        return ok({"reported": True}, 201)
 
     # friends
     def display(uid: str) -> str:
@@ -1465,6 +1522,99 @@ def _app_user(h: "Handler", method: str, route: str, query: dict[str, list[str]]
             return fail(400, "party.start.deny.noServer", "Pick a server first.")
         p["stage"] = "PLAYING"
         return ok(ready_view(b["id"]))
+
+    if route.startswith("party/") and route.endswith("/ready") and method == "GET":
+        pid = route.split("/")[1]
+        if pid not in app.parties or me not in app.parties[pid]["members"]:
+            return fail(404, "not_found", "Not found.")
+        return ok(ready_view(pid))
+
+    def manager(pid: Any, action: str) -> str | None:
+        """None when allowed, else a refusal already sent."""
+        if not digits(pid):
+            bad()
+            return "sent"
+        if pid not in app.parties:
+            fail(404, "not_found", "Not found.")
+            return "sent"
+        p = app.parties[pid]
+        if p["hostId"] != me and me not in p.get("cohosts", set()):
+            fail(403, f"party.{action}.deny.notManager", "Only the host or a co-host can do that.")
+            return "sent"
+        return None
+
+    if route in ("party/force-start", "party/cancel", "party/end") and method == "POST":
+        action = route[6:]
+        if manager(b.get("id"), action):
+            return None
+        p = app.parties[b["id"]]
+        if route == "party/force-start":
+            if p["serverId"] is None:
+                return fail(400, "party.forceStart.deny.noServer", "Pick a server first.")
+            p["stage"] = "PLAYING"
+        elif route == "party/cancel":
+            if p["stage"] != "READY":
+                return fail(409, "party.ready.deny.notReady", "There is no ready round to cancel.")
+            p["stage"] = "LOBBY"
+            p["ready"] = set()
+        else:
+            p["stage"] = "ENDED"
+        return ok(None)
+    if route == "party/role" and method == "POST":
+        if b.get("role") not in ("CO_HOST", "MEMBER") or not isinstance(b.get("userId"), str):
+            return bad()
+        if manager(b.get("id"), "role"):
+            return None
+        p = app.parties[b["id"]]
+        if b["userId"] not in p["members"] or b["userId"] == p["hostId"]:
+            return fail(404, "party.role.deny.notMember", "They are not a member of this party.")
+        cohosts = p.setdefault("cohosts", set())
+        (cohosts.add if b["role"] == "CO_HOST" else cohosts.discard)(b["userId"])
+        return ok(None)
+    if route == "party/transfer" and method == "POST":
+        if not known(b.get("id")) or not isinstance(b.get("userId"), str):
+            return bad()
+        p = app.parties[b["id"]]
+        if p["hostId"] != me:
+            return fail(403, "party.transfer.deny.notHost", "Only the host can hand the party over.")
+        if b["userId"] not in p["members"]:
+            return fail(404, "party.transfer.deny.notMember", "They are not in this party.")
+        p["hostId"] = b["userId"]
+        return ok(None)
+    if route.startswith("party/") and route.endswith("/reserve/offer") and method == "GET":
+        pid, server = route.split("/")[1], q("serverId")
+        if not (server or "").isdigit():
+            return bad("Expected number, received nan")
+        if pid not in app.parties or me not in app.parties[pid]["members"]:
+            return fail(404, "not_found", "Not found.")
+        return ok({"available": True, "maxMinutes": 120, "privateOffered": False, "approval": "AUTO", "cooldownSec": 0})
+    if route == "party/reserve" and method == "POST":
+        minutes = b.get("minutes")
+        if not digits(b.get("partyId")) or not isinstance(b.get("serverId"), int) or not isinstance(minutes, int) \
+                or not 5 <= minutes <= 1440 or not isinstance(b.get("private", False), bool):
+            return bad()
+        if manager(b["partyId"], "reserve"):
+            return None
+        if b.get("private"):
+            return fail(400, "party.reserve.deny.private", "This server does not offer private lobbies.")
+        rid = str(700 + app.next())
+        app.reservations[rid] = {"id": rid, "status": "PENDING" if b["serverId"] == 8 else "APPROVED",
+                                 "private": False, "startsAt": "2026-10-13T09:00:00Z",
+                                 "endsAt": f"+{min(minutes, 120)}m", "releasedAt": None, "note": b.get("note"),
+                                 "partyId": b["partyId"], "partyName": app.parties[b["partyId"]]["name"], "partyUsers": 1,
+                                 "server": {"id": b["serverId"], "name": f"Server {b['serverId']}", "url": "s", "online": True}}
+        return ok(app.reservations[rid])
+    if route == "party/reserve/cancel" and method == "POST":
+        rid = b.get("reservationId")
+        if not digits(rid):
+            return bad()
+        row = app.reservations.get(rid)
+        if row is None:
+            return fail(404, "not_found", "Not found.")
+        if manager(row["partyId"], "reserve"):
+            return None
+        row["status"] = "CANCELLED"
+        return ok(row)
 
     # installs
     def install_view(iid: int) -> dict[str, Any]:

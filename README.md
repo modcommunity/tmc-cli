@@ -345,6 +345,11 @@ tmc party create --app 3 --name "Tonight" --max-users 8
 tmc party invite PARTY USER... | invites | accept INVITE | decline INVITE
 tmc party join PARTY [--password …] | leave PARTY | kick PARTY USER [--ban]
 tmc party ready PARTY [--not] | start PARTY [--server 12]
+tmc party round PARTY             # the ready round
+tmc party force-start PARTY | cancel PARTY | end PARTY      # host / co-host
+tmc party role PARTY USER co-host|member | transfer PARTY USER
+tmc party offer PARTY --server 12 | reserve PARTY --server 12 --minutes 60 [--private] [--note …]
+tmc party reserve-cancel RESERVATION
 tmc installs list | create --app 3 --name Main | update ID … | delete ID
 tmc installs items add|set|remove INSTALL mod 42 [--enable|--disable] [--order N]
 tmc subscriptions list | add mod 42 | remove mod 42
@@ -353,6 +358,10 @@ tmc reviews write mod 42 --rating 5 --content "Works great"
 tmc reviews vote REVIEW up|down|clear | delete REVIEW
 tmc stats top 3 kills --limit 10 # a leaderboard, with your own rank
 tmc stats me 3 | defs 3
+tmc account settings | set notifyParties=false timezone=Europe/Berlin
+tmc account downloads [--items]  # what your app devices are downloading
+tmc account avatar -o json > me.json && tmc account avatar-set me.json
+tmc report mod 42 --type spam --title "Scam links" --content "The description links to …"
 ```
 
 The access token lasts an hour and is renewed automatically with the refresh
@@ -361,7 +370,9 @@ token (once per command: when it is past its expiry, or when the site answers
 run `app-login` again. A session is tied to the base URL it was issued by and is
 never sent to another one. `TMC_APP_TOKEN` supplies an access token directly
 (nothing is stored or refreshed). `tmc review` (singular) is still the content
-API's; `tmc reviews` writes as you.
+API's; `tmc reviews` writes as you. Routes only a game client calls
+(heartbeat, play launch, stats submit, …) are deliberately not commands; see
+`docs/surfaces.md`.
 
 ## Network status (Defcon)
 
