@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Runs the CLI straight out of this checkout: ./tmc --help. Installed users get the
+# `tmc` console script from pyproject.toml instead.
+exec python3 "$(dirname "$0")/src/main.py" "$@"
