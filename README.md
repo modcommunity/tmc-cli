@@ -383,6 +383,11 @@ base URL is all it needs; against a site from before those mirrors (a 404), or
 when `--site-url` is given, it asks the website origin's tRPC procedures
 (`defcon.public.status|series|mtr`) instead.
 
+The status site (website-status) serves the same mirrors on its own host:
+`--status-url`, `TMC_STATUS_URL` or a profile's `status_url` option points the REST
+reads there (default: the API origin, which forwards). `tmc defcon summary` is
+the status site's one-call answer and needs that host.
+
 ```bash
 tmc defcon status                # overall verdict, counts, open incidents
 tmc defcon status --check        # exit 0 OK · 1 DEGRADED · 2 DOWN · 3 UNKNOWN

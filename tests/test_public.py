@@ -8,16 +8,20 @@ precisely so that a transport which leaked it would be caught.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from mock_server import STATE  # noqa: E402
 from test_cli import CliTestCase  # noqa: E402
+
+from tmc_cli import cli  # noqa: E402
 
 from tmc_cli.config import site_url  # noqa: E402
 
@@ -147,6 +151,28 @@ class TestCatalog(CliTestCase):
 
 
 class TestDefcon(CliTestCase):
+    def test_status_url_moves_the_rest_reads(self) -> None:
+        # website-status answers /api/status/defcon on its own host; the API
+        # origin here is a dead port, so only --status-url can have served it.
+        out = io.StringIO()
+
+        with redirect_stdout(out):
+            code = cli.main(
+                ["--base-url", "http://127.0.0.1:9", "--status-url", self.server.base_url + "/",
+                 "--retries", "0", "--yes", "defcon", "status", "-o", "jsonl"]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["overall"], "DEGRADED")
+        self.assertEqual(STATE.requests[-1][1], "/api/status/defcon")
+        self.assertIsNone(STATE.auth_headers[-1])
+
+    def test_summary_reads_the_status_site(self) -> None:
+        row = json.loads(self.run_cli("defcon", "summary", "-o", "jsonl"))
+        self.assertEqual((row["level"], row["open"], row["reporting"]), ("minor", 1, True))
+        self.assertEqual(STATE.requests[-1][1], "/api/status/summary")
+        self.assertIsNone(STATE.auth_headers[-1])
+
     def test_status_summary_and_check(self) -> None:
         row = json.loads(self.run_cli("defcon", "status", "-o", "jsonl"))
         self.assertEqual(

@@ -486,3 +486,26 @@ def site_url(args: Any, base_url: str) -> str:
         return urllib.parse.urlunsplit((parts.scheme, netloc, "", "", ""))
 
     return base_url.rstrip("/")
+
+
+def status_url(args: Any) -> str | None:
+    """The status site's own origin, when the user names one.
+
+    website-status serves the Defcon REST mirror (`/api/status/defcon*`) on its
+    own host (status.moddingcommunity.com) as well as city's API origin, which
+    forwards to it while `status.remote` is on. So there is no default: city's
+    answer is the same data, and a guessed host would break self-hosted sites.
+    Flag, then `TMC_STATUS_URL`, then the profile's `status_url` option.
+    """
+
+    explicit = getattr(args, "status_url", None) or _env("STATUS_URL")
+
+    if not explicit:
+        config = Config.load()
+        name = getattr(args, "profile", None) or _env("PROFILE") or config.default_profile
+        profile = config.profiles.get(name)
+
+        if profile:
+            explicit = profile.options.get("status_url")
+
+    return str(explicit).rstrip("/") if explicit else None

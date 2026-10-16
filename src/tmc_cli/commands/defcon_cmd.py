@@ -74,7 +74,7 @@ def _call(ctx: Context, procedure: str, payload: dict[str, Any] | None = None) -
         params = {k: v for k, v in (payload or {}).items() if v is not None}
 
         try:
-            response = ctx.public_transport().request("GET", REST[procedure], params=params or None)
+            response = ctx.public_transport(status=True).request("GET", REST[procedure], params=params or None)
         except ApiError as err:
             # A site from before the mirrors: fall through to its tRPC.
             if err.status != 404:
@@ -505,5 +505,47 @@ def mtr(ctx: Context) -> int:
             rows.append({"node": trace.get("nodeId"), "ts": trace.get("ts"), **hop})
 
     ctx.emit(rows)
+
+    return 0
+
+
+def summary(ctx: Context) -> int:
+    """`GET /api/status/summary`: the status site's one-call "is it up".
+
+    Exists only on website-status (incident banner, whether city is reporting,
+    the core probe's latest result per path), so unlike the Defcon reads there
+    is no city fallback: without --status-url this asks the API origin and a
+    404 gets a hint.
+    """
+
+    try:
+        response = ctx.public_transport(status=True).request("GET", "/api/status/summary")
+    except ApiError as err:
+        if err.status == 404:
+            err.hint = "Only the status site (website-status) has this: pass --status-url or TMC_STATUS_URL."
+
+        raise
+
+    if ctx.dry_run:
+        return 0
+
+    data = response.data
+
+    if _raw(ctx) or not isinstance(data, dict):
+        ctx.emit(data)
+        return 0
+
+    core = data.get("core") or {}
+    ctx.emit(
+        [
+            {
+                "level": data.get("level"),
+                "open": len(data.get("open") or []),
+                "upcoming": len(data.get("upcoming") or []),
+                "reporting": core.get("reporting"),
+                "lastReportAt": core.get("lastReportAt"),
+            }
+        ]
+    )
 
     return 0

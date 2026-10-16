@@ -86,6 +86,14 @@ def _add_connection_flags(parser: argparse.ArgumentParser, *, leaf: bool) -> Non
             "else the base URL minus a leading 'api.')"
         ),
     )
+    group.add_argument(
+        "--status-url",
+        default=default,
+        help=(
+            "the status site's origin (website-status), for 'defcon' REST reads "
+            "(default: TMC_STATUS_URL, else the API origin, which forwards)"
+        ),
+    )
     group.add_argument("--token", default=default, help="bearer token (overrides the profile)")
     group.add_argument("--key-id", default=default, help="JWT key id (tmcak_…)")
     group.add_argument("--private-key", default=default, help="path to the Ed25519 PKCS#8 PEM")
@@ -889,6 +897,7 @@ def _build_defcon(sub: Any) -> None:
     monitor = _leaf(ops, "monitor", "one monitor's current reading from each node", run(defcon_cmd.monitor))
     monitor.add_argument("monitor", help="id, or (part of) its name")
 
+    _leaf(ops, "summary", "the status site's one-call answer (needs --status-url)", run(defcon_cmd.summary))
     _leaf(ops, "nodes", "the monitoring nodes and their status", run(defcon_cmd.nodes))
     history = _leaf(ops, "incidents", "open incidents (--all: the last 90 days, resolved too)", run(defcon_cmd.incidents))
     history.add_argument("--all", action="store_true", help="the last 90 days, open and resolved, newest first")

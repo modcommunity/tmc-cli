@@ -13,7 +13,7 @@ import sys
 from typing import Any, Sequence
 
 from .client import ContentClient
-from .config import Settings, resolve, resolve_unkeyed, site_url
+from .config import Settings, resolve, resolve_unkeyed, site_url, status_url
 from .http import Transport
 from . import output
 
@@ -55,7 +55,7 @@ class Context:
 
     # -- output --------------------------------------------------------------
 
-    def public_transport(self, *, site: bool = False) -> Transport:
+    def public_transport(self, *, site: bool = False, status: bool = False) -> Transport:
         """A transport that sends NO credential, for the surfaces that take none.
 
         The app API's public reads and the status page's tRPC procedures are
@@ -69,7 +69,12 @@ class Context:
         """
 
         settings = resolve_unkeyed(self.args)
-        base = self.site_url(settings.base_url) if site else settings.base_url
+        base = settings.base_url
+
+        if site:
+            base = self.site_url(base)
+        elif status:
+            base = status_url(self.args) or base
 
         return Transport(
             base,

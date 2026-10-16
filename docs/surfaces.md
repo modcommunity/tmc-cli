@@ -14,6 +14,7 @@ Both go through `Context.public_transport()`, an anonymous `Transport`; the prof
 
 - On a 404 there (a site from before the mirrors), or whenever `--site-url` is given, it asks tRPC `defcon.public.{status,series,mtr}` (superjson: `?input={"json":…}`, answer under `result.data.json`) on the website origin instead, because tRPC is refused on the API container.
 - `config.site_url()` picks that origin: `--site-url` > `TMC_SITE_URL` > profile option `site_url` > base URL minus `api.`.
+- website-status serves the same REST mirror on its own host (status.moddingcommunity.com); city's API origin forwards to it, so the default still works. `--status-url` > `TMC_STATUS_URL` > profile option `status_url` aims the REST reads there (no guessed default). `tmc defcon summary` (`/api/status/summary`) exists only on that host. `/api/status/ping` is a probe, not wrapped.
 - Only the public procedures, never `defcon.admin.*`.
 - `incidents --all` pages `/api/status/defcon/incidents` (90 days, open and resolved, `nextCursor`).
 - The site's `show.nodes` / `show.incidents` switches are honoured even though `status` sends node rows regardless.

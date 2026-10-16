@@ -345,6 +345,14 @@ class Handler(BaseHTTPRequestHandler):
         # The app API and tRPC: public reads, answered only WITHOUT a credential
         # — a content key sent to the app API is refused as the wrong credential,
         # which is exactly what `tmc catalog` must avoid.
+        if parts == ["api", "status", "summary"]:
+            self._read_body()
+            self._json(200, {"ok": True, "data": {
+                "level": "minor", "open": [{"id": 1}], "upcoming": [],
+                "core": {"reporting": True, "lastReportAt": "2026-10-16T07:00:00Z", "checks": [], "probes": []},
+            }})
+            return
+
         if parts[:3] == ["api", "status", "defcon"]:
             self._read_body()
             self._defcon_rest(parts[3:], query)
