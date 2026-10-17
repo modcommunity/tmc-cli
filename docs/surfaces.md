@@ -4,7 +4,7 @@
 
 Both go through `Context.public_transport()`, an anonymous `Transport`; the profile's secret is never sent.
 
-**`tmc catalog`** reads `/api/app/v1/{browse,content/<kind>/<id>,facets,reviews,apps,servers/lookup}` on the API origin. `tmc catalog listing` is the one read from the content API instead: `/api/content/server/list`, the anonymous address-only server listing a game's server browser starts from (paged by number; same per-address quota as every anonymous read).
+**`tmc catalog`** reads `/api/app/v1/{browse,content/<kind>/<id>,facets,reviews,apps,apps/<id>/build,servers/lookup}` on the API origin. `tmc catalog listing` is the one read from the content API instead: `/api/content/server/list`, the anonymous address-only server listing a game's server browser starts from (paged by number; same per-address quota as every anonymous read).
 
 - These routes are `auth: 'optional'`, but a `Bearer` that is sent is resolved as an app token (`ResolveAppToken`), and a publishing (`CLI`) credential is refused `403 wrong_credential`, so sending the profile's key would break reads that need none.
 - List params are repeated keys (`parseQuery` + `normalizeArrayFields`), not the comma form `encode_params` uses for `/api/content`; `app_api.query_string` builds that dialect.
@@ -34,6 +34,7 @@ Site routes are `src/app/api/app/v1/…/route.ts` in website-city, schemas in `s
   - `play/launch`: resolves a Play press into a native URI or a web-player boot descriptor (with a 60 s handoff code) for the app to act on; there is nothing for a terminal to launch.
   - `play/scope-key`: mints the per-server player key a client hands to the server it is joining (`docs/api/avatar-protocol.md`); useful only to the joining client, and each call writes a row.
   - `stats/submit`: a player's own client filing self-reported figures for its game; a terminal would only forge a diary.
+  - `update/<target>/<arch>/<current>`: the desktop app's self-updater feed (unauthenticated, like `/version`); only the app's updater asks it.
   - `auth/handoff`: the web-player loader redeems a one-use code for a `GAME` token; `auth: none`, no device session involved.
   - `downloads` POST/DELETE: the app reporting its own download queue, keyed on the reporting device's token; the CLI's device has no queue. The GET (all devices) is `tmc account downloads`.
   - `packs`: the registry half of pack publishing (`claim`/`complete`/`fail`), which ships switched off (`uploads.packsEnabled`) and is driven by the site's upload form and worker (`src/worker/jobs/upload/pack-publish.ts`), which move the bytes. A bare `claim` from a terminal permanently spends a version number on a pack with no files; it belongs with whatever moves the bytes, not in a registry-only command.

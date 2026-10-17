@@ -135,6 +135,12 @@ class TestCatalog(CliTestCase):
         self.assertEqual([s["id"] for s in servers], ["5"])
         self.assert_no_credential()
 
+    def test_build(self) -> None:
+        build = json.loads(self.run_cli("catalog", "build", "1", "--platform", "LINUX_X64", "-o", "json"))
+        self.assertEqual((build["appId"], build["format"], build["entry"]), (1, "TAR_GZ", "seed"))
+        self.assertEqual(json.loads(self.run_cli("catalog", "build", "1", "--platform", "IOS_ARM64", "-o", "json")), None)
+        self.assert_no_credential()
+
     def test_server_listing(self) -> None:
         first = json.loads(self.run_cli("catalog", "listing", "--app", "seed", "-o", "json"))
         self.assertEqual([r["id"] for r in first], [703, 704])

@@ -859,6 +859,10 @@ def _build_catalog(sub: Any) -> None:
     games.add_argument("--slug", action="append", help="game slug (repeatable)")
     paging(games)
 
+    build = _leaf(ops, "build", "the installable build of a game for one platform", catalog_cmd.build)
+    build.add_argument("app", type=int, help="game id (see `catalog games`)")
+    build.add_argument("--platform", required=True, choices=catalog_cmd.BUILD_PLATFORMS)
+
     lookup = _leaf(ops, "lookup", "listed servers at an address", catalog_cmd.lookup)
     lookup.add_argument("host", help="hostname or IP")
     lookup.add_argument("--port", type=int)

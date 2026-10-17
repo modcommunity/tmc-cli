@@ -7,7 +7,7 @@ Supports **both** authentication modes the API accepts: bearer tokens and
 Ed25519 signed assertions (JWT mode) — and reading public items with **no key at
 all** (`--anon`).
 
-**No dependencies.** Python 3.10+ and the standard library. `cryptography` is
+**No dependencies.** Python 3.11+ and the standard library. `cryptography` is
 used for signing if it happens to be installed, and the bundled RFC 8032
 implementation is used if it isn't — same signatures either way.
 
@@ -43,6 +43,22 @@ tmc auth use staging
 Credentials live in `~/.config/tmc/config.json` (mode `0600`). `TMC_TOKEN`,
 `TMC_KEY_ID`, `TMC_PRIVATE_KEY_FILE`, `TMC_BASE_URL` and `TMC_PROFILE` work too,
 which is usually what you want in CI.
+
+Every environment override (a flag beats the environment, the environment beats
+the profile):
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `TMC_BASE_URL` | API origin | `https://api.moddingcommunity.com` |
+| `TMC_SITE_URL` | website origin (`tmc open`, tRPC for `defcon`) | base URL minus a leading `api.` (`https://moddingcommunity.com`) |
+| `TMC_STATUS_URL` | status site origin for `defcon` (`https://status.moddingcommunity.com`) | none: the site's own forwarding answers |
+| `TMC_PROFILE` | profile to use | the config's default |
+| `TMC_TOKEN` | bearer key | |
+| `TMC_KEY_ID`, `TMC_PRIVATE_KEY`, `TMC_PRIVATE_KEY_FILE` | JWT key id and PEM (inline or path) | |
+| `TMC_JWT_LIFETIME` | assertion lifetime in seconds | 60 |
+| `TMC_APP_TOKEN` | app-user token for `friends`, `party`, … (used as-is, no refresh) | |
+| `TMC_CONFIG_DIR` | where `config.json` lives | `~/.config/tmc` |
+| `TMC_COLOR` | `always` forces colour when piped | auto (TTY) |
 
 Check what you have:
 
@@ -316,6 +332,7 @@ tmc catalog show mod 42 --part dependencies      # or releases, media, links
 tmc catalog facets mod                           # game/category ids to filter by
 tmc catalog reviews mod 42 --sort helpful
 tmc catalog games --search seed
+tmc catalog build 1 --platform LINUX_X64         # the installable native build of a game (null = none)
 tmc catalog lookup play.example.com --port 27015 # listed servers at an address
 tmc catalog listing --app hungario --all          # the address-only server listing a game's browser reads
 ```

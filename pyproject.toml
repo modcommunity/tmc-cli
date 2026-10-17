@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,8 +7,8 @@ name = "tmc-cli"
 version = "1.2.0"
 description = "Command-line client for TMC's public content API (bearer + Ed25519 JWT auth)"
 readme = "README.md"
-requires-python = ">=3.10"
-license = { text = "MIT" }
+requires-python = ">=3.11"
+license = "MIT"
 keywords = ["tmc", "api", "cli", "content", "mods"]
 
 # Deliberately empty. The whole tool runs on the standard library so it can be
@@ -19,7 +19,7 @@ dependencies = []
 # Faster Ed25519 signing. The pure-Python fallback in `tmc_cli/ed25519.py`
 # produces identical signatures, so this is a performance choice, not a
 # functional one.
-fast = ["cryptography>=42"]
+fast = ["cryptography>=44"]
 
 [project.scripts]
 tmc = "tmc_cli.cli:main"

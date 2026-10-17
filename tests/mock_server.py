@@ -567,6 +567,15 @@ class Handler(BaseHTTPRequestHandler):
         if route == "apps":
             return ok({"apps": [{"id": 1, "name": "Seed", "slug": "seed", "type": "GAME", "isOfficial": True, "hasServers": True, "webUrl": "https://x/seed"}], "nextCursor": None, "total": 1, "playEnabled": True})
 
+        if re.fullmatch(r"apps/\d+/build", route):
+            if one("platform") not in ("WINDOWS_X64", "WINDOWS_ARM64", "LINUX_X64", "LINUX_ARM64", "MACOS_UNIVERSAL", "ANDROID_ARM64", "IOS_ARM64"):
+                return self._json(400, {"ok": False, "code": "BAD_REQUEST", "message": "platform is required"})
+
+            if one("platform") != "LINUX_X64":
+                return ok(None)
+
+            return ok({"appId": int(route.split("/")[1]), "platform": "LINUX_X64", "version": "1.0.0", "url": "https://x/seed.tar.gz", "sha256": "0" * 64, "sizeBytes": 10, "format": "TAR_GZ", "entry": "seed", "args": [], "minClientVersion": None, "notes": None})
+
         if route == "servers/lookup":
             if not one("host"):
                 return self._json(400, {"ok": False, "code": "BAD_REQUEST", "message": "host is required"})

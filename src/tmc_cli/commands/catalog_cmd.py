@@ -35,6 +35,12 @@ SORTS = (
 
 TIME_RANGES = ("all", "24h", "7d", "30d")
 
+#: `AppBuildPlatformVals`: the machine asking; the route has no "all of them".
+BUILD_PLATFORMS = (
+    "WINDOWS_X64", "WINDOWS_ARM64", "LINUX_X64", "LINUX_ARM64",
+    "MACOS_UNIVERSAL", "ANDROID_ARM64", "IOS_ARM64",
+)
+
 APP_TYPES = ("GAME", "GAME_SINGLEPLAYER", "GAME_ENGINE", "VOIP", "OTHER")
 
 #: `normalizeArrayFields`: these are lists even with one value.
@@ -298,6 +304,24 @@ def games(ctx: Context) -> int:
         ]
     )
 
+    return 0
+
+
+def build(ctx: Context) -> int:
+    """The one installable build of a game for a platform: `/apps/<id>/build`.
+
+    The server answers `null` for every refusal (hidden game, disabled build,
+    nothing for that platform), so an empty result is one fact, not several.
+    """
+
+    data = _get(ctx, f"/apps/{ctx.args.app}/build", {"platform": ctx.args.platform})
+
+    if not data:
+        ctx.note(f"no installable build of game {ctx.args.app} for {ctx.args.platform}")
+        ctx.emit(None if _raw(ctx) else [])
+        return 0
+
+    ctx.emit(data)
     return 0
 
 
