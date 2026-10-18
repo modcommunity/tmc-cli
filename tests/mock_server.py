@@ -1171,7 +1171,20 @@ class MockServer:
 #   - `auth/refresh` ROTATES: the old refresh token is retired, and presenting a
 #     retired one revokes the family (`token_reuse`), as `RotateAppToken` does.
 
-APP_USER_ROOTS = {"auth", "me", "friends", "party", "presence", "installs", "subscriptions", "stats", "downloads", "avatar", "report"}
+APP_USER_ROOTS = {"auth", "me", "friends", "party", "presence", "installs", "subscriptions", "stats", "downloads", "avatar", "report", "play"}
+
+PLAY_ROWS: dict[str, list[dict[str, Any]]] = {
+    "games": [
+        {"id": 1, "name": "Seed", "modes": ["web", "app"], "serverCnt": 2, "playerCnt": 12, "lobbyCnt": 1, "directPlay": True, "solo": False, "isOfficial": True},
+        {"id": 2, "name": "Quiet", "modes": ["app"], "serverCnt": 0, "playerCnt": 0, "lobbyCnt": 0, "directPlay": False, "solo": False, "isOfficial": False},
+    ],
+    "servers": [
+        {"id": 7, "name": "Seed EU", "appId": 1, "appName": "Seed", "modes": ["app"], "online": True, "curUsers": 9, "maxUsers": 16, "map": "dm1"},
+        {"id": 8, "name": "Seed Empty", "appId": 1, "appName": "Seed", "modes": ["app"], "online": True, "curUsers": 0, "maxUsers": 16, "map": None},
+    ],
+    "lobbies": [{"id": "500", "name": "Bob's", "appId": 1, "appName": "Seed", "stage": "LOBBY", "users": 2, "maxUsers": 8, "needsPassword": False, "hostName": "Bob"}],
+    "invites": [],
+}
 
 APP_USERS = {
     "u1": {"id": "u1", "name": "Ann", "username": "ann", "avatar": None, "role": "USER"},
@@ -1221,6 +1234,8 @@ class AppUserState:
         ]}
         self.avatars: dict[str, dict[str, Any]] = {}
         self.reports: list[dict[str, Any]] = []
+        self.play_enabled = True
+        self.quick: list[dict[str, Any]] = []
         self.reservations: dict[str, dict[str, Any]] = {}
 
     def next(self) -> int:
@@ -1319,6 +1334,48 @@ def _app_user(h: "Handler", method: str, route: str, query: dict[str, list[str]]
 
     def digits(v: Any) -> bool:
         return isinstance(v, str) and v.isdigit() and len(v) <= 20
+
+    # play center: page (GET, a tab), playable (GET), quick-match (POST).
+    # `data: null` is the "play.enabled is off" answer for page and quick-match.
+    if route.startswith("play/") and route not in ("play/page", "play/playable", "play/quick-match"):
+        return fail(404, "not_found", "Not found.")
+    if route == "play/page" and method == "GET":
+        if not app.play_enabled:
+            return ok(None)
+        tab = q("tab") or "games"
+        if tab not in ("games", "servers", "lobbies", "invites") or (q("mode") not in (None, "web", "app")):
+            return bad()
+        if q("appId") is not None and not (q("appId") or "").isdigit():
+            return bad()
+        cursor = int(q("cursor") or 0)
+        rows = [r for r in PLAY_ROWS.get(tab, []) if (q("q") or "").lower() in r["name"].lower()]
+        if q("appId"):
+            rows = [r for r in rows if r.get("appId", r["id"]) == int(q("appId"))]
+        if q("populated") == "true":
+            rows = [r for r in rows if r.get("curUsers", r.get("playerCnt", 0)) > 0]
+        page = rows[cursor:cursor + 1]
+        more = cursor + 1 < len(rows)
+        return ok({"tab": tab, "apps": page if tab == "games" else [], "servers": page if tab == "servers" else [],
+                   "lobbies": page if tab == "lobbies" else [], "nextCursor": cursor + 1 if more else None,
+                   "anyPlayable": True, "party": None,
+                   "totals": {"games": 2, "servers": 2, "players": 12, "lobbies": 1}})
+    if route == "play/playable" and method == "GET":
+        if not app.play_enabled:
+            return ok({"enabled": False, "appIds": [], "directIds": [], "soloIds": []})
+        return ok({"enabled": True, "appIds": [1, 2], "directIds": [1], "soloIds": []})
+    if route == "play/quick-match" and method == "POST":
+        if not app.play_enabled:
+            return ok(None)
+        if not isinstance(b.get("appId"), int) or b["appId"] <= 0 or not isinstance(b.get("rotation", False), bool):
+            return bad()
+        if b["appId"] != 1:
+            return ok(None)
+        best = PLAY_ROWS["servers"][0]
+        app.quick.append(b)
+        return ok({"appName": "Seed", "country": None, "rotation": bool(b.get("rotation")), "scanned": 2, "full": 0,
+                   "stale": 0, "rotationHits": 0, "tookMs": 3.5, "best": best,
+                   "top": [{"id": best["id"], "name": best["name"], "curUsers": best["curUsers"], "maxUsers": best["maxUsers"],
+                            "map": best["map"], "countryCode": None, "score": 9.5, "why": ["populated"], "viaRotation": False}]})
 
     if route == "auth/revoke" and method == "POST":
         app.access = {k: v for k, v in app.access.items() if v != me}

@@ -767,6 +767,131 @@ def report(ctx: Context) -> int:
     return 0
 
 
+# ---- play center ------------------------------------------------------------
+
+PLAY_TABS = ("games", "servers", "lobbies", "invites")
+PLAY_MODES = ("web", "app")
+#: `PlaySortVals`; which tab takes which is the site's `PlayTabSorts`, so a
+#: sort the tab cannot express is the server's refusal to report, not ours.
+PLAY_SORTS = ("players", "recent", "name", "servers", "popular", "trending", "newest")
+
+PLAY_COLUMNS = {
+    "games": ("id", "name", "modes", "serverCnt", "playerCnt", "lobbyCnt", "directPlay", "solo", "isOfficial"),
+    "servers": ("id", "name", "appName", "modes", "curUsers", "maxUsers", "map", "online"),
+    "lobbies": ("id", "name", "appName", "hostName", "stage", "users", "maxUsers", "needsPassword"),
+    "invites": ("id", "name", "appName", "hostName", "stage", "users", "maxUsers", "needsPassword"),
+}
+
+
+def _play_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {**row, "modes": ",".join(row.get("modes") or [])} if "modes" in row else row
+
+
+def play_page(ctx: Context) -> int:
+    """One page of a play-center tab (`GET /play/page`).
+
+    Sent as the signed-in member: the route takes a token or none, and the
+    lobbies and invites tabs are only meaningful with one (friends' lobbies,
+    the party). `data: null` is the site saying the play center is switched off.
+    """
+
+    args = ctx.args
+    params = {
+        "tab": args.tab,
+        "q": args.search,
+        "appId": args.app,
+        "mode": args.mode,
+        "sort": args.sort,
+        "populated": True if args.populated else None,
+        "joinable": True if args.joinable else None,
+    }
+    cursor = args.cursor
+    rows: list[Any] = []
+
+    while True:
+        page = _session(ctx).request("GET", "/play/page", params={**params, "cursor": cursor})
+
+        if page is None:
+            ctx.note("the play center is switched off on this site")
+            ctx.emit(None if _raw(ctx) else [])
+            return 0
+
+        key = "apps" if page.get("tab") == "games" else page.get("tab")
+        rows.extend(page.get(key) or [])
+        cursor = page.get("nextCursor")
+
+        if not args.all or cursor is None or (args.max and len(rows) >= args.max):
+            break
+
+    if args.max:
+        rows = rows[: args.max]
+
+    if _raw(ctx):
+        ctx.emit({**page, key: rows})
+        return 0
+
+    ctx.emit([_play_row(r) for r in rows], columns=PLAY_COLUMNS[args.tab])
+
+    if not ctx.quiet:
+        totals = page.get("totals") or {}
+        ctx.note(
+            f"{len(rows)} shown · {totals.get('games')} game(s), {totals.get('servers')} server(s), "
+            f"{totals.get('players')} player(s), {totals.get('lobbies')} lobb(ies)"
+            + (f" · next: --cursor {cursor}" if cursor is not None else "")
+        )
+
+    return 0
+
+
+def play_playable(ctx: Context) -> int:
+    """Which games carry a Play button (`GET /play/playable`); `enabled: false` is the off answer."""
+
+    data = _session(ctx).request("GET", "/play/playable") or {}
+
+    if _raw(ctx):
+        ctx.emit(data)
+        return 0
+
+    ids = lambda key: ",".join(str(i) for i in data.get(key) or [])  # noqa: E731
+    ctx.emit([{"enabled": data.get("enabled"), "appIds": ids("appIds"), "directIds": ids("directIds"), "soloIds": ids("soloIds")}])
+
+    return 0
+
+
+QUICK_COLUMNS = ("id", "name", "curUsers", "maxUsers", "map", "countryCode", "score", "why", "viaRotation")
+
+
+def play_quick_match(ctx: Context) -> int:
+    """The best server for a game right now (`POST /play/quick-match`); writes nothing.
+
+    `data: null` is "play center off, or the game is not listed".
+    """
+
+    body = {"appId": ctx.args.app, "rotation": bool(ctx.args.rotation)}
+    data = _session(ctx).request("POST", "/play/quick-match", json_body=body)
+
+    if not data:
+        ctx.note(f"no quick match for game {ctx.args.app}: the play center is off or the game is not listed")
+        ctx.emit(None if _raw(ctx) else [])
+        return 0
+
+    if _raw(ctx):
+        ctx.emit(data)
+        return 0
+
+    ctx.emit(
+        [{**c, "why": ", ".join(c.get("why") or [])} for c in data.get("top") or []],
+        columns=QUICK_COLUMNS,
+    )
+    best = data.get("best")
+    ctx.note(
+        f"{data.get('appName')} · scanned {data.get('scanned')}, full {data.get('full')}, stale {data.get('stale')}"
+        + (f" · best: {best.get('name')} (#{best.get('id')})" if best else " · no server to join")
+    )
+
+    return 0
+
+
 # ---- installs ---------------------------------------------------------------
 
 INSTALL_COLUMNS = ("id", "app", "name", "isDefault", "strategy", "environment", "items", "playSeconds", "lastPlayedAt")

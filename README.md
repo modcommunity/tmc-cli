@@ -378,6 +378,9 @@ tmc stats me 3 | defs 3
 tmc account settings | set notifyParties=false timezone=Europe/Berlin
 tmc account downloads [--items]  # what your app devices are downloading
 tmc account avatar -o json > me.json && tmc account avatar-set me.json
+tmc play page --tab servers --populated   # play center: games, servers, lobbies, invites
+tmc play playable                          # which games have a Play button
+tmc play quick-match 1 --rotation          # the best server for game 1 right now
 tmc report mod 42 --type spam --title "Scam links" --content "The description links to …"
 ```
 
@@ -388,7 +391,7 @@ run `app-login` again. A session is tied to the base URL it was issued by and is
 never sent to another one. `TMC_APP_TOKEN` supplies an access token directly
 (nothing is stored or refreshed). `tmc review` (singular) is still the content
 API's; `tmc reviews` writes as you. Routes only a game client calls
-(heartbeat, play launch, stats submit, …) are deliberately not commands; see
+(heartbeat, play launch/scope-key, stats submit, …) are deliberately not commands; see
 `docs/surfaces.md`.
 
 ## Network status (Defcon)

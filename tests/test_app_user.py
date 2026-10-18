@@ -376,6 +376,66 @@ class TestGroups(AppUserCase):
         self.assertIn("No such stat.", err)
 
 
+class TestPlay(AppUserCase):
+    """The play center: page, playable, quick-match."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.login()
+        STATE.app.play_enabled = True
+        STATE.app.quick.clear()
+
+    def test_page_tabs_and_filters(self) -> None:
+        games = self.j("play", "page")
+        self.assertEqual((games["tab"], games["nextCursor"], games["totals"]["games"]), ("games", 1, 2))
+        self.assertEqual([a["name"] for a in games["apps"]], ["Seed"])
+
+        servers = self.j("play", "page", "--tab", "servers", "--populated")
+        self.assertEqual([s["id"] for s in servers["servers"]], [7])
+        self.assertIsNone(servers["nextCursor"])
+
+        self.assertEqual(self.j("play", "page", "--tab", "servers", "--app", "1", "--search", "empty")["servers"][0]["id"], 8)
+        self.assertEqual(self.j("play", "page", "--tab", "lobbies")["lobbies"][0]["id"], "500")
+
+    def test_page_all_follows_the_cursor(self) -> None:
+        out = self.j("play", "page", "--all")
+        self.assertEqual([a["id"] for a in out["apps"]], [1, 2])
+        self.assertEqual([a["id"] for a in self.j("play", "page", "--all", "--max", "1")["apps"]], [1])
+
+    def test_page_table_and_bad_input(self) -> None:
+        self.assertEqual([r["name"] for r in self.rows("play", "page", "--tab", "servers")], ["Seed EU", "Seed Empty"][:1])
+        self.run_cli_err("play", "page", "--tab", "nope", expect=2)
+        self.run_cli_err("play", "page", "--mode", "vr", expect=2)
+
+    def test_page_off_is_empty_not_an_error(self) -> None:
+        STATE.app.play_enabled = False
+        self.assertIsNone(self.j("play", "page"))
+        self.assertEqual(self.rows("play", "page"), [])
+
+    def test_playable(self) -> None:
+        out = self.j("play", "playable")
+        self.assertEqual((out["enabled"], out["appIds"], out["directIds"], out["soloIds"]), (True, [1, 2], [1], []))
+        STATE.app.play_enabled = False
+        self.assertFalse(self.j("play", "playable")["enabled"])
+
+    def test_quick_match(self) -> None:
+        out = self.j("play", "quick-match", "1", "--rotation")
+        self.assertEqual((out["best"]["id"], out["rotation"], out["top"][0]["score"]), (7, True, 9.5))
+        self.assertEqual(STATE.app.quick[-1], {"appId": 1, "rotation": True})
+        self.assertEqual(self.rows("play", "quick-match", "1")[0]["id"], 7)
+        self.assertEqual(STATE.app.quick[-1], {"appId": 1, "rotation": False})
+
+        # Unlisted game and play-center-off both answer null: one empty result.
+        self.assertIsNone(self.j("play", "quick-match", "99"))
+        STATE.app.play_enabled = False
+        self.assertEqual(self.rows("play", "quick-match", "1"), [])
+
+    def test_needs_a_session(self) -> None:
+        self.run_cli("auth", "app-logout")
+        err = self.run_cli_err("play", "playable", expect=2)
+        self.assertIn("app-login", err)
+
+
 class TestMoreRoutes(AppUserCase):
     """The routes added after the first cut: party management and booking,
     synced settings, downloads, avatar, report."""

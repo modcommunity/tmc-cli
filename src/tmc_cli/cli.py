@@ -917,7 +917,7 @@ def _build_defcon(sub: Any) -> None:
 
 
 #: The groups that run as the app-user session (`tmc auth app-login`).
-APP_USER_GROUPS = ("friends", "party", "presence", "installs", "subscriptions", "reviews", "stats", "account", "report")
+APP_USER_GROUPS = ("friends", "party", "presence", "installs", "subscriptions", "reviews", "stats", "account", "play", "report")
 
 
 def _build_app_user(sub: Any) -> None:
@@ -1101,6 +1101,24 @@ def _build_app_user(sub: Any) -> None:
     _leaf(ops, "avatar-set", "publish an avatar document", m.account_avatar_set).add_argument(
         "file", help="JSON file (as `tmc account avatar -o json` prints), or - for stdin"
     )
+
+    # -- play (the play center; launch and scope-key are the client's, see docs/surfaces.md)
+    ops = group("play", "the play center: games, servers, lobbies")
+    page = _leaf(ops, "page", "one page of a play-center tab", m.play_page)
+    page.add_argument("--tab", choices=m.PLAY_TABS, default="games")
+    page.add_argument("--search", "-s", help="name filter (up to 120 characters)")
+    page.add_argument("--app", type=int, help="only this game id")
+    page.add_argument("--mode", choices=m.PLAY_MODES)
+    page.add_argument("--sort", choices=m.PLAY_SORTS)
+    page.add_argument("--populated", action="store_true", help="only with players on")
+    page.add_argument("--joinable", action="store_true", help="only what you can join now")
+    page.add_argument("--cursor", type=int, default=0, help="resume from a previous page's cursor")
+    page.add_argument("--all", action="store_true", help="follow the cursor to the end")
+    page.add_argument("--max", type=int, help="stop after this many rows (with --all)")
+    _leaf(ops, "playable", "which games have a Play button", m.play_playable)
+    quick = _leaf(ops, "quick-match", "the best server for one game, now", m.play_quick_match)
+    quick.add_argument("app", type=int, help="game id")
+    quick.add_argument("--rotation", action="store_true", help="include the game's rotation servers")
 
     # -- report (one command, not a group)
     rep = _leaf(sub, "report", f"report an item to the moderators. {note}", m.report)
