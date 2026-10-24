@@ -15,6 +15,7 @@ import sys
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
+from urllib.parse import unquote
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -155,6 +156,99 @@ class TestCatalog(CliTestCase):
         err = self.run_cli_err("catalog", "listing", "--app", "nope", expect=4)
         self.assertIn("No such game.", err)
 
+    def test_facets_offline_maps_and_codes(self) -> None:
+        rows = [json.loads(l) for l in self.run_cli("catalog", "facets", "server", "-o", "jsonl").splitlines()]
+        by = {r["facet"]: r for r in rows}
+        self.assertEqual((by["country"]["code"], by["map"]["code"], by["app"]["count"]), ("DE", "dm1", 5))
+        self.assertNotIn("online=", STATE.requests[-1][1])
+
+        offline = json.loads(self.run_cli("catalog", "facets", "server", "--offline", "-o", "json"))
+        self.assertEqual(offline["apps"][0]["count"], 9)
+        self.assertIn("online=false", STATE.requests[-1][1])
+        self.assert_no_credential()
+
+    def test_server_rows_carry_the_country_code(self) -> None:
+        STATE.catalog_items[4]["server"] = {"country": "Germany", "countryCode": "DE"}
+        table = self.run_cli("catalog", "lookup", "play.example.com", "-o", "csv")
+        self.assertIn("country", table.splitlines()[0])
+        self.assertIn(",DE,", table)
+
+    def test_prefetch(self) -> None:
+        packs = json.loads(self.run_cli("catalog", "prefetch", "7", "-o", "json"))
+        self.assertEqual(packs["packs"][0]["id"], "seed/solo")
+        self.assertEqual(STATE.requests[-1][1], "/api/app/v1/servers/7/prefetch")
+        self.assertIn("seed/maps,0.3.0,8192", self.run_cli("catalog", "prefetch", "7", "-o", "csv"))
+        self.assertIn("No such server.", self.run_cli_err("catalog", "prefetch", "8", expect=4))
+        self.assert_no_credential()
+
+    def test_avatar_schema_and_library(self) -> None:
+        schema = json.loads(self.run_cli("catalog", "avatar-schema", "-o", "json"))
+        self.assertEqual(schema["schema_id"], "backbone.v1")
+
+        whole = json.loads(self.run_cli("catalog", "avatar-library", "--server", "7", "-o", "json"))
+        self.assertEqual((whole["serverId"], whole["wearables"][0]["slot"]), (7, "hat"))
+        self.assertEqual(STATE.requests[-1][1], "/api/avatar/v1/library?server=7")
+
+        rows = self.run_cli("catalog", "avatar-library", "--app", "1", "-o", "csv")
+        self.assertIn("wearables,9,Cap,1,300,wearable/9/1", rows)
+        part = json.loads(self.run_cli("catalog", "avatar-library", "--app", "1", "--part", "actions", "-o", "json"))
+        self.assertEqual(part[0]["contentId"], "action/1/1")
+
+        self.assertIn("known server", self.run_cli_err("catalog", "avatar-library", "--server", "8", expect=4))
+        self.assert_no_credential()
+
+    def test_ticket_keys(self) -> None:
+        rows = [json.loads(l) for l in self.run_cli("catalog", "ticket-keys", "-o", "jsonl").splitlines()]
+        self.assertEqual([(r["kid"], r["revoked"]) for r in rows], [("k2", False), ("k1", True)])
+        self.assertIn("BEGIN PUBLIC KEY", json.loads(self.run_cli("catalog", "ticket-keys", "-o", "json"))["keys"][0]["pem"])
+        self.assert_no_credential()
+
+
+class TestCreatorPublish(CliTestCase):
+    GLB = b"glTF" + b"\x02\x00\x00\x00" + b"\x00" * 40
+
+    def glb(self) -> str:
+        path = os.path.join(self.config_dir, "cap.glb")
+        with open(path, "wb") as handle:
+            handle.write(self.GLB)
+        return path
+
+    def test_publish_sends_the_creator_token_and_the_raw_file(self) -> None:
+        path = self.glb()
+        with mock.patch.dict(os.environ, {"TMC_CREATOR_TOKEN": "tmcc_creator"}):
+            out = json.loads(self.run_cli(
+                "creator", "publish", path, "--kind", "wearable", "--name", "Red cap",
+                "--slot", "hat", "--licence", "CC0-1.0", "--sharing", "public", "-o", "json",
+            ))
+
+        self.assertEqual((out["id"], out["held"]), (31, True))
+        sent = STATE.published[-1]
+        self.assertEqual((sent["bytes"], sent["type"]), (len(self.GLB), "model/gltf-binary"))
+        self.assertEqual((sent["query"]["slot"], sent["query"]["licence"], sent["query"]["sharing"]), ("hat", "CC0-1.0", "PUBLIC"))
+        # The content key on the line (`run_cli --token`) is never what goes out.
+        self.assertEqual(STATE.auth_headers[-1], "Bearer tmcc_creator")
+
+    def test_token_file_and_refusals(self) -> None:
+        path = self.glb()
+        token = os.path.join(self.config_dir, "creator.token")
+        with open(token, "w", encoding="utf-8") as handle:
+            handle.write("tmcc_creator\n")
+
+        self.run_cli("creator", "publish", path, "--kind", "action", "--name", "Wave", "--loop", "--token-file", token)
+        self.assertEqual(STATE.published[-1]["query"]["loop"], "1")
+
+        with mock.patch.dict(os.environ, {"TMC_CREATOR_TOKEN": ""}):
+            self.assertIn("creator token is required", self.run_cli_err("creator", "publish", path, "--kind", "avatar", "--name", "R", expect=2))
+            # A wearable without a slot is refused before any upload is spent.
+            self.assertIn("--slot and --licence", self.run_cli_err("creator", "publish", path, "--kind", "wearable", "--name", "C", expect=2))
+
+        with open(path, "wb") as handle:
+            handle.write(b"not a glb at all, really")
+        self.assertIn("not a binary glTF", self.run_cli_err("creator", "publish", path, "--kind", "avatar", "--name", "R", "--token-file", token, expect=2))
+
+        with mock.patch.dict(os.environ, {"TMC_CREATOR_TOKEN": "tmcc_wrong"}):
+            self.assertIn("valid creator token", self.run_cli_err("creator", "publish", self.glb(), "--kind", "avatar", "--name", "R", expect=3))
+
 
 class TestDefcon(CliTestCase):
     def test_status_url_moves_the_rest_reads(self) -> None:
@@ -288,6 +382,29 @@ class TestDefcon(CliTestCase):
         self.run_cli("defcon", "status", "--site-url", self.server.base_url)
         self.assertEqual(len(STATE.requests), 1)
         self.assertTrue(STATE.requests[0][1].startswith("/api/trpc/defcon.public.status"))
+
+    def test_outages_and_one_outage(self) -> None:
+        rows = [json.loads(l) for l in self.run_cli("defcon", "outages", "-o", "jsonl").splitlines()]
+        self.assertEqual([r["id"] for r in rows], [40, 39, 38])
+        self.assertEqual(rows[1]["monitors"], "Homepage, +1 private")
+        self.assertTrue(STATE.requests[-1][1].startswith("/api/trpc/defcon.public.outages"))
+        self.assertTrue(all(h is None for h in STATE.auth_headers))
+
+        recent = [json.loads(l) for l in self.run_cli("defcon", "outages", "--since-hours", "24", "-o", "jsonl").splitlines()]
+        self.assertEqual([r["id"] for r in recent], [40])
+        self.assertIn("sinceHours", unquote(STATE.requests[-1][1]))
+
+        paged = [json.loads(l) for l in self.run_cli("defcon", "outages", "--limit", "2", "--all", "-o", "jsonl").splitlines()]
+        self.assertEqual(len(paged), 3)
+
+        one = json.loads(self.run_cli("defcon", "outage", "40", "-o", "jsonl"))
+        self.assertEqual((one["id"], one["notes"]), (40, 1))
+        notes = json.loads(self.run_cli("defcon", "outage", "40", "--notes", "-o", "json"))
+        self.assertEqual(notes[0]["body"], "redeploy")
+        self.assertIn("No outage report 7", self.run_cli_err("defcon", "outage", "7", expect=2))
+
+        STATE.defcon["enabled"] = False
+        self.assertIn("does not publish outage", self.run_cli_err("defcon", "outages", expect=2))
 
     def test_dry_run_sends_nothing(self) -> None:
         self.run_cli("defcon", "monitors", "--dry-run")

@@ -741,6 +741,106 @@ def account_avatar_set(ctx: Context) -> int:
     return 0
 
 
+#: `AVATAR_ACTION_KINDS` and `AVATAR_ACTION_EQUIP_MAX` in website-city's
+#: `src/types/avatar/library.ts`.
+ACTION_KINDS = ("EMOTE", "POSE", "GESTURE")
+ACTION_EQUIP_MAX = 8
+
+
+def account_actions(ctx: Context) -> int:
+    """Every emote, pose and gesture you may equip, with its slot when equipped."""
+
+    params = {"kind": ctx.args.kind} if ctx.args.kind else None
+    data = _session(ctx).request("GET", "/avatar/actions", params=params) or {}
+
+    if _raw(ctx):
+        ctx.emit(data)
+        return 0
+
+    ctx.emit(data.get("actions") or [], columns=("id", "kind", "name", "builtin", "loop", "equipped", "slot"))
+
+    return 0
+
+
+def account_actions_set(ctx: Context) -> int:
+    """Replace one kind's equipped list, in order (`PUT /avatar/actions`).
+
+    The route sets the whole list, so naming no ids unequips every action of
+    that kind; the CLI asks for `--clear` rather than read an empty line as that.
+    """
+
+    args = ctx.args
+    ids = list(dict.fromkeys(args.ids or []))
+
+    if not ids and not args.clear:
+        raise UsageError("Name the action ids to equip, or --clear to unequip every one of this kind.")
+
+    if ids and args.clear:
+        raise UsageError("--clear takes no ids.")
+
+    if len(ids) > ACTION_EQUIP_MAX:
+        raise UsageError(f"At most {ACTION_EQUIP_MAX} actions of one kind can be equipped.")
+
+    _session(ctx).request("PUT", "/avatar/actions", json_body={"kind": args.kind, "actionIds": ids})
+    ctx.done(f"{args.kind}: " + (", ".join(str(i) for i in ids) if ids else "none equipped"))
+
+    return 0
+
+
+# ---- mirrors (CDN mirrors you operate; docs/self-hosting-mirror.md on the site) -
+
+
+MIRROR_COLUMNS = ("id", "baseUrl", "operator", "status", "regions", "packs", "avatars", "latencyMs", "lastProbeAt", "lastError")
+
+
+def mirrors_list(ctx: Context) -> int:
+    data = _session(ctx).request("GET", "/mirrors") or {}
+
+    if _raw(ctx):
+        ctx.emit(data)
+        return 0
+
+    ctx.emit(
+        [
+            {**m, "regions": ",".join(m.get("regions") or []), "packs": ",".join(m.get("packs") or [])}
+            for m in data.get("mirrors") or []
+        ],
+        columns=MIRROR_COLUMNS,
+    )
+
+    if not ctx.quiet and data.get("list_url"):
+        ctx.note(f"published list: {data['list_url']}")
+
+    return 0
+
+
+def mirrors_add(ctx: Context) -> int:
+    """Register a mirror. It is listed once the site's probe passes (PENDING until then)."""
+
+    args = ctx.args
+    body: dict[str, Any] = {"base_url": args.url, "operator": args.operator, "packs": args.pack or []}
+
+    if args.region:
+        body["regions"] = args.region
+
+    if args.avatars:
+        body["avatars"] = True
+
+    ctx.emit(_session(ctx).request("POST", "/mirrors", json_body=body))
+
+    return 0
+
+
+def mirrors_remove(ctx: Context) -> int:
+    if not ctx.confirm(f"Remove mirror {ctx.args.id}?"):
+        return 1
+
+    _session(ctx).request("DELETE", "/mirrors", params={"id": ctx.args.id})
+    ctx.done(f"Removed mirror {ctx.args.id}.")
+
+    return 0
+
+
 # ---- report -----------------------------------------------------------------
 
 

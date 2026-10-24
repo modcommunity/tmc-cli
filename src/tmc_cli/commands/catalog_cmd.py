@@ -49,6 +49,9 @@ ARRAY_PARAMS = ("apps", "categories", "tags", "ids", "slugs", "countries", "adul
 #: The table's default; `--field` reaches the rest (webUrl, favorites, …).
 SUMMARY_COLUMNS = ("kind", "id", "name", "app", "owner", "downloads", "rating", "categories", "tags")
 
+#: `lookup` answers servers only, so the country is worth a column there.
+SERVER_COLUMNS = ("kind", "id", "name", "app", "owner", "country", "categories", "tags")
+
 
 def _get(ctx: Context, path: str, params: dict[str, Any]) -> Any:
     """GET with the app API's query dialect (`app_api.query_string`)."""
@@ -88,6 +91,7 @@ def _extra(pairs: Iterable[str] | None) -> dict[str, Any]:
 
 def _summary_row(item: dict[str, Any]) -> dict[str, Any]:
     stats = item.get("stats") or {}
+    server = item.get("server") or {}
 
     return {
         "kind": item.get("kind"),
@@ -101,6 +105,9 @@ def _summary_row(item: dict[str, Any]) -> dict[str, Any]:
         "favorites": stats.get("favorites"),
         "categories": _names(item.get("categories")),
         "tags": _names(item.get("tags")),
+        # Server rows only: the ISO code (`ServerInfo.countryCode`) where the
+        # site has one, which is shorter in a table than the country's name.
+        "country": server.get("countryCode") or server.get("country"),
         "webUrl": item.get("webUrl"),
     }
 
@@ -210,9 +217,19 @@ def show(ctx: Context) -> int:
 
 
 def facets(ctx: Context) -> int:
-    """What the filter sidebar offers for a kind — ids to feed `browse`."""
+    """What the filter sidebar offers for a kind — ids to feed `browse`.
 
-    data = _get(ctx, "/facets", {"kind": ctx.args.kind}) or {}
+    Counts use the browse list's own predicate, which for servers is "online"
+    unless `online=false` is asked for (`--offline`), so a chip's number is the
+    number of rows it selects.
+    """
+
+    params: dict[str, Any] = {"kind": ctx.args.kind}
+
+    if getattr(ctx.args, "offline", False):
+        params["online"] = False
+
+    data = _get(ctx, "/facets", params) or {}
 
     if _raw(ctx):
         ctx.emit(data)
@@ -220,7 +237,7 @@ def facets(ctx: Context) -> int:
 
     rows = []
 
-    for facet, key in (("app", "apps"), ("category", "categories"), ("country", "countries")):
+    for facet, key in (("app", "apps"), ("category", "categories"), ("country", "countries"), ("map", "maps")):
         for ref in data.get(key) or []:
             rows.append(
                 {
@@ -229,10 +246,14 @@ def facets(ctx: Context) -> int:
                     "name": ref.get("name"),
                     "count": ref.get("count"),
                     "parentId": ref.get("parentId"),
+                    # The value a filter takes that is not the id: a country's
+                    # ISO code, a map's own name (what `mapName` matches).
+                    "code": ref.get("shortCode") or ref.get("key"),
+                    "icon": ref.get("icon") or ref.get("image"),
                 }
             )
 
-    ctx.emit(rows, columns=("facet", "id", "name", "count", "parentId"))
+    ctx.emit(rows, columns=("facet", "id", "name", "count", "parentId", "code"))
 
     return 0
 
@@ -331,7 +352,7 @@ def lookup(ctx: Context) -> int:
     data = _get(ctx, "/servers/lookup", {"host": ctx.args.host, "port": ctx.args.port}) or {}
     servers = data.get("servers") or []
 
-    ctx.emit(servers if _raw(ctx) else [_summary_row(s) for s in servers], columns=SUMMARY_COLUMNS)
+    ctx.emit(servers if _raw(ctx) else [_summary_row(s) for s in servers], columns=SERVER_COLUMNS)
 
     return 0
 
@@ -385,5 +406,100 @@ def listing(ctx: Context) -> int:
             columns=LISTING_COLUMNS,
             pagination=None if args.all else pagination,
         )
+
+    return 0
+
+
+def prefetch(ctx: Context) -> int:
+    """What a client may download before joining a server: `/servers/<id>/prefetch`.
+
+    The game's newest packs (its solo pack first), plus where the avatar library
+    and the mirror list are. Public like the library it points at.
+    """
+
+    doc = _get(ctx, f"/servers/{ctx.args.server}/prefetch", {}) or {}
+
+    if _raw(ctx):
+        ctx.emit(doc)
+        return 0
+
+    ctx.emit(doc.get("packs") or [], columns=("id", "version", "bytes"))
+
+    if not ctx.quiet:
+        ctx.note(f"avatar library: {doc.get('avatar_library') or '-'} · mirrors: {doc.get('mirrors_url') or '-'}")
+
+    return 0
+
+
+def avatar_schema(ctx: Context) -> int:
+    """The asset set the avatar editor draws (`/avatar/schema`, a `DotAvatarSchema`)."""
+
+    ctx.emit(_get(ctx, "/avatar/schema", {}))
+
+    return 0
+
+
+#: `/api/avatar/v1/library` lists, and the columns a table shows for each.
+LIBRARY_PARTS = {
+    "avatars": ("id", "name", "source", "rig", "version", "size", "contentId"),
+    "actions": ("id", "kind", "name", "builtin", "loop", "version", "size", "contentId"),
+    "wearables": ("id", "name", "slot", "version", "size", "contentId"),
+}
+
+
+def avatar_library(ctx: Context) -> int:
+    """Every uploaded avatar, action and wearable usable in a game or on a server.
+
+    `/api/avatar/v1/library`, not the app API: a plain JSON body (no `ok`/`data`
+    envelope) that game clients fetch before joining. `--server` narrows to what
+    that server allows; `--app` is the game's whole set.
+    """
+
+    args = ctx.args
+    params = {"server": args.server} if args.server else {"app": args.app}
+    response = ctx.public_transport().request(
+        "GET", "/api/avatar/v1/library?" + app_api.query_string(params)
+    )
+    doc = response.data or {}
+
+    if _raw(ctx) and not args.part:
+        ctx.emit(doc)
+        return 0
+
+    if args.part:
+        ctx.emit(doc.get(args.part) or [], columns=LIBRARY_PARTS[args.part])
+        return 0
+
+    rows = [
+        {"part": part, **{k: r.get(k) for k in ("id", "name", "version", "size", "contentId")}}
+        for part in LIBRARY_PARTS
+        for r in doc.get(part) or []
+    ]
+    ctx.emit(rows, columns=("part", "id", "name", "version", "size", "contentId"))
+
+    return 0
+
+
+def ticket_keys(ctx: Context) -> int:
+    """The public keys game servers verify connect tickets with (`/auth/ticket-keys`).
+
+    A read for an operator checking what their server will trust; minting a
+    ticket (`auth/ticket`) is the joining client's and is not a command.
+    """
+
+    doc = _get(ctx, "/auth/ticket-keys", {}) or {}
+
+    if _raw(ctx):
+        ctx.emit(doc)
+        return 0
+
+    # `keys` already leaves the revoked ones out; `revoked` names them so a
+    # server drops a cached copy. The PEMs are for `-o json`, not a table.
+    rows = [{"kid": k.get("kid"), "alg": k.get("alg"), "revoked": False} for k in doc.get("keys") or []]
+    rows += [{"kid": kid, "alg": None, "revoked": True} for kid in doc.get("revoked") or []]
+    ctx.emit(rows, columns=("kid", "alg", "revoked"))
+
+    if not ctx.quiet:
+        ctx.note(f"issuer {doc.get('issuer')} · refresh every {doc.get('refreshSec')} s")
 
     return 0

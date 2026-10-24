@@ -57,6 +57,7 @@ the profile):
 | `TMC_KEY_ID`, `TMC_PRIVATE_KEY`, `TMC_PRIVATE_KEY_FILE` | JWT key id and PEM (inline or path) | |
 | `TMC_JWT_LIFETIME` | assertion lifetime in seconds | 60 |
 | `TMC_APP_TOKEN` | app-user token for `friends`, `party`, … (used as-is, no refresh) | |
+| `TMC_CREATOR_TOKEN` | creator token for `creator publish` (never stored) | |
 | `TMC_CONFIG_DIR` | where `config.json` lives | `~/.config/tmc` |
 | `TMC_COLOR` | `always` forces colour when piped | auto (TTY) |
 
@@ -330,11 +331,16 @@ tmc catalog browse server --filter onlineOnly=true --filter os=LINUX --all --max
 tmc catalog show mod 42                          # summary + counts
 tmc catalog show mod 42 --part dependencies      # or releases, media, links
 tmc catalog facets mod                           # game/category ids to filter by
+tmc catalog facets server --offline              # + countries (ISO code) and maps; offline servers counted too
 tmc catalog reviews mod 42 --sort helpful
 tmc catalog games --search seed
 tmc catalog build 1 --platform LINUX_X64         # the installable native build of a game (null = none)
 tmc catalog lookup play.example.com --port 27015 # listed servers at an address
 tmc catalog listing --app hungario --all          # the address-only server listing a game's browser reads
+tmc catalog prefetch 7                           # packs a client may fetch before joining server 7
+tmc catalog avatar-schema -o json                # the avatar editor's asset set
+tmc catalog avatar-library --server 7 --part wearables
+tmc catalog ticket-keys                          # keys game servers verify connect tickets with
 ```
 
 Kinds are the app API's: `asset mod server serverMap article community
@@ -378,6 +384,8 @@ tmc stats me 3 | defs 3
 tmc account settings | set notifyParties=false timezone=Europe/Berlin
 tmc account downloads [--items]  # what your app devices are downloading
 tmc account avatar -o json > me.json && tmc account avatar-set me.json
+tmc account actions --kind emote | actions-set emote 2 1 | actions-set pose --clear
+tmc mirrors list | add https://m.example/packs --operator Ann --pack 'seed/*' | remove 3
 tmc play page --tab servers --populated   # play center: games, servers, lobbies, invites
 tmc play playable                          # which games have a Play button
 tmc play quick-match 1 --rotation          # the best server for game 1 right now
@@ -393,6 +401,17 @@ never sent to another one. `TMC_APP_TOKEN` supplies an access token directly
 API's; `tmc reviews` writes as you. Routes only a game client calls
 (heartbeat, play launch/scope-key, stats submit, …) are deliberately not commands; see
 `docs/surfaces.md`.
+
+## Publishing avatar models, actions and wearables
+
+`tmc creator publish` uploads one `.glb` to `/api/avatar/v1/publish` with a
+**creator token** (`tmcc_…`, made on the site), read from `TMC_CREATOR_TOKEN` or
+`--token-file` and never stored:
+
+```bash
+TMC_CREATOR_TOKEN=tmcc_… tmc creator publish cap.glb --kind wearable --name "Red cap" --slot hat --licence CC0-1.0
+tmc creator publish wave.glb --kind action --action-kind emote --name Wave --loop --token-file ~/.tmcc
+```
 
 ## Network status (Defcon)
 
@@ -419,6 +438,8 @@ tmc defcon incidents --all       # the last 90 days, open and resolved
 tmc defcon latency 3 --range week --summary   # per node: latest, mean, peak ms
 tmc defcon latency 3 --range day --node frankfurt -o csv
 tmc defcon mtr 5                 # latest traceroute of an MTR monitor
+tmc defcon outages --since-hours 24   # fleet-wide outage reports (tRPC on the website origin)
+tmc defcon outage 40 --notes
 ```
 
 The site's own switches are honoured: when the status page hides nodes or

@@ -109,6 +109,26 @@ class AppTokenCredential(Credential):
         return f"app user {redact(self.token)}"
 
 
+@dataclass
+class CreatorTokenCredential(Credential):
+    """A creator token (`tmcc_…`), the avatar publish endpoint's own credential.
+
+    Never stored in a profile: it is minted on the site for one creator's
+    uploads and only `/api/avatar/v1/publish` reads it, so it comes from
+    `TMC_CREATOR_TOKEN` or a file per call (`creator_cmd.py`).
+    """
+
+    token: str
+
+    kind = "creator"
+
+    def authorization(self) -> str | None:
+        return f"Bearer {self.token}"
+
+    def describe(self) -> str:
+        return f"creator {redact(self.token)}"
+
+
 class JwtCredential(Credential):
     """A JWT-mode key: an Ed25519 private key that signs a fresh assertion."""
 

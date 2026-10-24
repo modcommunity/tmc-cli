@@ -529,6 +529,34 @@ class TestMoreRoutes(AppUserCase):
         item = self.rows("account", "downloads", "--items")[0]
         self.assertEqual((item["deviceName"], item["name"]), ("Desktop", "Big Pack"))
 
+    def test_account_actions(self) -> None:
+        rows = self.rows("account", "actions")
+        self.assertEqual([(r["id"], r["equipped"], r["slot"]) for r in rows], [(1, True, 0), (2, False, None), (3, False, None)])
+        self.assertEqual([r["id"] for r in self.rows("account", "actions", "--kind", "pose")], [3])
+
+        self.run_cli("account", "actions-set", "emote", "2", "1")
+        self.assertEqual(STATE.app.loadout["EMOTE"], [2, 1])
+        self.assertEqual(self.j("account", "actions")["actions"][1]["slot"], 0)
+
+        self.assertIn("--clear", self.run_cli_err("account", "actions-set", "emote", expect=2))
+        self.run_cli("account", "actions-set", "emote", "--clear")
+        self.assertEqual(STATE.app.loadout["EMOTE"], [])
+        self.assertIn("No such action", self.run_cli_err("account", "actions-set", "pose", "1", expect=4))
+        self.assertIn("At most 8", self.run_cli_err("account", "actions-set", "emote", *map(str, range(1, 10)), expect=2))
+
+    def test_mirrors(self) -> None:
+        self.assertEqual(self.rows("mirrors", "list"), [])
+        made = self.j("mirrors", "add", "https://m.example/packs", "--operator", "Ann", "--pack", "seed/*", "--region", "eu", "--avatars")
+        self.assertEqual(made["status"], "PENDING")
+        row = self.rows("mirrors", "list")[0]
+        self.assertEqual((row["baseUrl"], row["packs"], row["regions"], row["avatars"]), ("https://m.example/packs", "seed/*", "eu", True))
+
+        self.assertIn("already registered", self.run_cli_err("mirrors", "add", "https://m.example/packs", "--operator", "Ann", expect=1))
+        self.run_cli("mirrors", "remove", str(made["id"]))
+        self.assertIn(("DELETE", f"/api/app/v1/mirrors?id={made['id']}"), STATE.requests)
+        self.assertEqual(STATE.app.mirrors, [])
+        self.assertIn("No such mirror", self.run_cli_err("mirrors", "remove", "99", expect=4))
+
     def test_account_avatar(self) -> None:
         self.assertEqual(self.j("account", "avatar")["schema_id"], "backbone.v1")
 

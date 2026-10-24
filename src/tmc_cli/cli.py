@@ -28,6 +28,7 @@ from .commands import (
     catalog_cmd,
     content_cmd,
     contract_cmd,
+    creator_cmd,
     defcon_cmd,
     file_cmd,
     misc_cmd,
@@ -364,6 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_catalog(sub)
     _build_defcon(sub)
     _build_app_user(sub)
+    _build_creator(sub)
 
     return parser
 
@@ -842,8 +844,9 @@ def _build_catalog(sub: Any) -> None:
         help="list just this part of the item",
     )
 
-    facets = _leaf(ops, "facets", "the games, categories and countries to filter a kind by", catalog_cmd.facets)
+    facets = _leaf(ops, "facets", "the games, categories, countries and maps to filter a kind by", catalog_cmd.facets)
     facets.add_argument("kind", choices=kinds)
+    facets.add_argument("--offline", action="store_true", help="servers: count offline ones too (online=false)")
 
     reviews = _leaf(ops, "reviews", "an item's reviews", catalog_cmd.reviews)
     reviews.add_argument("kind", choices=kinds)
@@ -872,6 +875,19 @@ def _build_catalog(sub: Any) -> None:
     listing.add_argument("--page", type=int, help="page number (1 first)")
     listing.add_argument("--limit", type=int, help="page size (the site caps it at api.anon.serverListMax)")
     listing.add_argument("--all", action="store_true", help="every page")
+
+    prefetch = _leaf(ops, "prefetch", "what a client may download before joining a server", catalog_cmd.prefetch)
+    prefetch.add_argument("server", type=int, help="server id")
+
+    _leaf(ops, "avatar-schema", "the avatar editor's asset set (DotAvatarSchema)", catalog_cmd.avatar_schema)
+
+    library = _leaf(ops, "avatar-library", "uploaded avatars, actions and wearables usable in a game", catalog_cmd.avatar_library)
+    where = library.add_mutually_exclusive_group(required=True)
+    where.add_argument("--app", type=int, help="game id")
+    where.add_argument("--server", type=int, help="server id (what that server allows)")
+    library.add_argument("--part", choices=tuple(catalog_cmd.LIBRARY_PARTS), help="list just this part")
+
+    _leaf(ops, "ticket-keys", "the public keys game servers verify connect tickets with", catalog_cmd.ticket_keys)
 
 
 def _build_defcon(sub: Any) -> None:
@@ -915,9 +931,18 @@ def _build_defcon(sub: Any) -> None:
     mtr = _leaf(ops, "mtr", "an MTR monitor's latest traceroute", run(defcon_cmd.mtr))
     mtr.add_argument("monitor", help="id, or (part of) its name")
 
+    outages = _leaf(ops, "outages", "fleet-wide outage reports, newest first (tRPC, website origin)", run(defcon_cmd.outages))
+    outages.add_argument("--since-hours", type=int, help="only those started or still open in this many hours (1..720)")
+    outages.add_argument("--limit", type=int, help="page size (1..100)")
+    outages.add_argument("--all", action="store_true", help="follow the cursor through the whole history")
+
+    one = _leaf(ops, "outage", "one outage report and its notes", run(defcon_cmd.outage))
+    one.add_argument("id", type=int)
+    one.add_argument("--notes", action="store_true", help="list the notes instead")
+
 
 #: The groups that run as the app-user session (`tmc auth app-login`).
-APP_USER_GROUPS = ("friends", "party", "presence", "installs", "subscriptions", "reviews", "stats", "account", "play", "report")
+APP_USER_GROUPS = ("friends", "party", "presence", "installs", "subscriptions", "reviews", "stats", "account", "mirrors", "play", "report")
 
 
 def _build_app_user(sub: Any) -> None:
@@ -1101,6 +1126,26 @@ def _build_app_user(sub: Any) -> None:
     _leaf(ops, "avatar-set", "publish an avatar document", m.account_avatar_set).add_argument(
         "file", help="JSON file (as `tmc account avatar -o json` prints), or - for stdin"
     )
+    _leaf(ops, "actions", "the emotes, poses and gestures you may equip", m.account_actions).add_argument(
+        "--kind", type=str.upper, choices=m.ACTION_KINDS
+    )
+    aact = _leaf(ops, "actions-set", "equip one kind's actions, in order (replaces the list)", m.account_actions_set)
+    aact.add_argument("kind", type=str.upper, choices=m.ACTION_KINDS)
+    aact.add_argument("ids", type=int, nargs="*", help=f"action ids, at most {m.ACTION_EQUIP_MAX}")
+    aact.add_argument("--clear", action="store_true", help="unequip every action of this kind")
+
+    # -- mirrors (CDN mirrors you run; listed once the site's probe passes)
+    ops = group("mirrors", "CDN mirrors you operate")
+    _leaf(ops, "list", "your mirrors and their probe state", m.mirrors_list)
+    madd = _leaf(ops, "add", "register a mirror (PENDING until a probe passes)", m.mirrors_add)
+    # `url`, not `base_url`: that dest is the global --base-url, and sharing it
+    # would aim the session at the mirror.
+    madd.add_argument("url", metavar="BASE_URL", help="https:// base the packs are served under")
+    madd.add_argument("--operator", required=True, help="who runs it (up to 64 characters)")
+    madd.add_argument("--pack", action="append", help="pack pattern it serves (repeatable, up to 50)")
+    madd.add_argument("--region", action="append", help="region it serves (repeatable, up to 8)")
+    madd.add_argument("--avatars", action="store_true", help="it also mirrors the avatar library")
+    _leaf(ops, "remove", "remove one of your mirrors", m.mirrors_remove).add_argument("id", type=int)
 
     # -- play (the play center; launch and scope-key are the client's, see docs/surfaces.md)
     ops = group("play", "the play center: games, servers, lobbies")
@@ -1129,6 +1174,37 @@ def _build_app_user(sub: Any) -> None:
     text = rep.add_mutually_exclusive_group(required=True)
     text.add_argument("--content", help="what is wrong, 10 to 4000 characters")
     text.add_argument("--content-file", help="read it from a file")
+
+
+def _build_creator(sub: Any) -> None:
+    creator = sub.add_parser(
+        "creator",
+        help="publish avatar models, actions and wearables (creator token)",
+        description=(
+            "POST /api/avatar/v1/publish with a creator token (tmcc_…) from "
+            "TMC_CREATOR_TOKEN or --token-file; never the content key or the app session."
+        ),
+    )
+    ops = creator.add_subparsers(dest="creator_op", metavar="<op>", required=True)
+    c = creator_cmd
+
+    pub = _leaf(ops, "publish", "upload one .glb as a wearable, action or avatar", c.publish)
+    pub.add_argument("file", help=".glb file")
+    pub.add_argument("--kind", required=True, choices=c.KINDS)
+    pub.add_argument("--name", required=True, help="up to 64 characters (48 for an action)")
+    pub.add_argument("--description", help="up to 300 characters")
+    pub.add_argument("--sharing", type=str.upper, choices=c.SHARINGS, help="default PRIVATE")
+    pub.add_argument("--token-file", help="file holding the creator token (else TMC_CREATOR_TOKEN)")
+    wear = pub.add_argument_group("wearable")
+    wear.add_argument("--id", type=int, help="replace the file of this wearable of yours")
+    wear.add_argument("--slot", choices=c.SLOTS)
+    wear.add_argument("--licence", choices=c.LICENCES)
+    wear.add_argument("--bone", help="attach bone (default: the slot's)")
+    wear.add_argument("--credit", help="credit line, up to 200 characters")
+    wear.add_argument("--source", help="source URL")
+    act = pub.add_argument_group("action")
+    act.add_argument("--action-kind", type=str.upper, choices=c.ACTION_KINDS, help="default EMOTE")
+    act.add_argument("--loop", action="store_true", help="the clip loops")
 
 
 def local_command_paths() -> set[tuple[str, ...]]:
@@ -1168,7 +1244,7 @@ def top_level_commands() -> list[str]:
 
     return sorted(
         list(TOP_LEVEL_TYPES)
-        + ["auth", "contract", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "open", "completion", "catalog", "defcon"]
+        + ["auth", "contract", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "open", "completion", "catalog", "defcon", "creator"]
         + list(APP_USER_GROUPS)
     )
 

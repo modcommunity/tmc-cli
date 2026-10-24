@@ -397,6 +397,85 @@ def _incident_history(ctx: Context) -> int:
     return 0
 
 
+#: Outage report rows: fleet-wide failures the per-monitor alerts miss.
+OUTAGE_COLUMNS = ("id", "startedAt", "endedAt", "peakNodes", "monitors", "failed", "samples", "noteCount")
+
+
+def _outage_row(o: dict[str, Any]) -> dict[str, Any]:
+    names = [str(m.get("name")) for m in o.get("monitors") or []]
+
+    if o.get("otherMonitors"):
+        names.append(f"+{o['otherMonitors']} private")
+
+    return {**o, "monitors": ", ".join(names)}
+
+
+def outages(ctx: Context) -> int:
+    """Outage reports (`defcon.public.outages`), newest first.
+
+    tRPC only, on the website origin: the site has no REST mirror of these, so
+    `--status-url` does not apply. `--since-hours 24` is the status page's list
+    under the nodes; `--all` follows the cursor through the whole history.
+    """
+
+    args = ctx.args
+    rows: list[dict[str, Any]] = []
+    cursor: int | None = None
+
+    for _ in range(HISTORY_MAX_PAGES):
+        payload: dict[str, Any] = {"limit": args.limit or HISTORY_PAGE}
+
+        if cursor:
+            payload["cursor"] = cursor
+
+        if args.since_hours:
+            payload["sinceHours"] = args.since_hours
+
+        page = _call_trpc(ctx, "outages", payload)
+
+        if page is None:
+            return 0
+
+        if not page.get("enabled"):
+            raise UsageError("This site does not publish outage reports.", hint="defcon.statusPublic is off on the site.")
+
+        rows.extend(page.get("items") or [])
+        cursor = page.get("nextCursor")
+
+        if not args.all or not cursor:
+            break
+
+    ctx.emit(rows if _raw(ctx) else [_outage_row(r) for r in rows], columns=OUTAGE_COLUMNS)
+
+    if not ctx.quiet and not rows:
+        ctx.note("No outage reports" + (f" in the last {args.since_hours} h." if args.since_hours else "."))
+
+    return 0
+
+
+def outage(ctx: Context) -> int:
+    """One outage report with its notes (`defcon.public.outage`)."""
+
+    doc = _call_trpc(ctx, "outage", {"id": ctx.args.id})
+
+    if ctx.dry_run:
+        return 0
+
+    if not doc:
+        raise UsageError(f"No outage report {ctx.args.id}.", hint="See 'tmc defcon outages'.")
+
+    if _raw(ctx) or ctx.args.notes:
+        ctx.emit((doc.get("notes") or []) if ctx.args.notes else doc)
+        return 0
+
+    row = _outage_row(doc)
+    row["notes"] = len(doc.get("notes") or [])
+    row.pop("noteCount", None)
+    ctx.emit(row)
+
+    return 0
+
+
 def latency(ctx: Context) -> int:
     """A monitor's latency series over a chart range, one row per node-bucket."""
 

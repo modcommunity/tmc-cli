@@ -184,6 +184,15 @@ class State:
         #: The app API's public reads, keyed by what they answer for.
         self.catalog_items = [app_summary(n) for n in range(1, 6)]
         self.app = AppUserState()
+        #: `/api/avatar/v1/publish` uploads accepted.
+        self.published: list[dict[str, Any]] = []
+        #: `defcon.public.outages`, newest first.
+        self.defcon_outages: list[dict[str, Any]] = [
+            {"id": 40 - n, "startedAt": f"2026-10-2{3 - n}T10:00:00.000Z", "endedAt": None if n == 0 else f"2026-10-2{3 - n}T10:05:00.000Z",
+             "peakNodes": 3, "nodeIds": [1, 2, 3], "monitors": [{"id": 1, "name": "Homepage"}], "otherMonitors": n,
+             "samples": 90, "failed": 80, "topError": None, "noteCount": 1 if n == 0 else 0}
+            for n in range(3)
+        ]
 
     def take_id(self) -> int:
         value = self.next_id
@@ -358,7 +367,36 @@ class Handler(BaseHTTPRequestHandler):
             self._defcon_rest(parts[3:], query)
             return
 
-        if parts[:3] == ["api", "app", "v1"] and parts[3:4] and (
+        # `/api/avatar/v1/*`: not the app API. Plain JSON, no envelope; the
+        # library is public, publish takes a creator token and the GLB as the body.
+        if parts == ["api", "avatar", "v1", "library"] and method == "GET":
+            self._read_body()
+            server, app = query.get("server"), query.get("app")
+            if not (server or app):
+                return self._json(400, {"error": "Pass ?app=<id> or ?server=<id> of a known server."})
+            if server and server != "7":
+                return self._json(404, {"error": "Pass ?app=<id> or ?server=<id> of a known server."})
+            return self._json(200, {
+                "appId": 1, "serverId": int(server) if server else None, "excludeTmc": False,
+                "avatars": [{"id": 4, "name": "Robot", "source": "UPLOAD", "rig": "humanoid", "version": 2, "size": 900, "sha256": "a" * 64, "contentId": "avatar/4/2", "url": "https://x/a.glb", "previewUrl": None}],
+                "actions": [{"id": 1, "kind": "EMOTE", "name": "Wave", "builtin": True, "clip": "wave", "loop": False, "version": 1, "size": None, "sha256": None, "contentId": "action/1/1"}],
+                "wearables": [{"id": 9, "name": "Cap", "slot": "hat", "bone": None, "offset": None, "licence": "CC0-1.0", "credit": None, "version": 1, "size": 300, "sha256": "b" * 64, "contentId": "wearable/9/1"}],
+            })
+
+        if parts == ["api", "avatar", "v1", "publish"] and method == "POST":
+            raw = self._read_body()
+            if self.headers.get("Authorization") != "Bearer tmcc_creator":
+                return self._json(401, {"error": "A valid creator token is required."})
+            if query.get("kind") not in ("wearable", "action", "avatar"):
+                return self._json(400, {"error": "kind must be wearable, action or avatar."})
+            if query.get("kind") == "wearable" and query.get("slot") not in ("hat", "face", "neck", "back", "waist", "hand_right", "hand_left"):
+                return self._json(400, {"error": "slot must be one of hat, face, neck, back, waist, hand_right, hand_left."})
+            if len(raw) < 20:
+                return self._json(400, {"error": "Send the .glb file as the request body."})
+            STATE.published.append({"query": query, "bytes": len(raw), "type": self.headers.get("Content-Type")})
+            return self._json(201, {"id": 31, "held": query.get("sharing") == "PUBLIC", "url": "/avatars/wearables/31"})
+
+        if parts[:3] == ["api", "app", "v1"] and parts[3:4] and parts[3:5] not in APP_PUBLIC_ROUTES and (
             parts[3] in APP_USER_ROOTS or parts[3:5] == ["reviews", "write"]
         ):
             body = self._read_json() if method != "GET" else None
@@ -467,6 +505,23 @@ class Handler(BaseHTTPRequestHandler):
         if procedure == "defcon.public.mtr":
             return ok(STATE.defcon_mtr.get(payload["monitorId"], []))
 
+        if procedure == "defcon.public.outages":
+            if not STATE.defcon.get("enabled"):
+                return ok({"enabled": False, "items": [], "nextCursor": None})
+            cursor = payload.get("cursor")
+            limit = payload.get("limit") or 25
+            rows = [r for r in STATE.defcon_outages if not cursor or r["id"] < cursor]
+            if payload.get("sinceHours"):
+                rows = rows[:1]  # the mock's "recent" is the open one
+            page = rows[:limit]
+            return ok({"enabled": True, "items": page, "nextCursor": page[-1]["id"] if len(rows) > limit else None})
+
+        if procedure == "defcon.public.outage":
+            for r in STATE.defcon_outages:
+                if r["id"] == payload.get("id"):
+                    return ok({**r, "notes": [{"id": 1, "body": "redeploy", "author": {"name": "Ann"}, "createdAt": "2026-10-23T10:10:00.000Z"}][: r["noteCount"]]})
+            return ok(None)
+
         self._json(404, {"error": {"json": {"message": f'No "query"-procedure on path "{procedure}"', "data": {"code": "NOT_FOUND"}}}})
 
     def _defcon_rest(self, rest: list[str], query: dict[str, str]) -> None:
@@ -549,11 +604,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(404, {"ok": False, "code": "NOT_FOUND", "message": "Not found."})
 
         if route == "facets":
+            if one("online") not in (None, "true", "false"):
+                return self._json(400, {"ok": False, "code": "BAD_REQUEST", "message": "Expected boolean"})
+            servers = one("kind") == "server"
+            offline = one("online") == "false"
             return ok({
-                "apps": [{"id": 1, "name": "Seed", "url": "seed", "count": 5, "icon": None}],
-                "categories": [{"id": 7, "name": "Maps", "url": None, "count": 2, "parentId": None}],
-                "countries": [],
+                "apps": [{"id": 1, "name": "Seed", "url": "seed", "count": 9 if offline else 5, "icon": "https://x/seed.png"}],
+                "categories": [{"id": 7, "name": "Maps", "url": None, "count": 2, "parentId": None, "icon": None}],
+                "countries": [{"id": 49, "name": "Germany", "url": None, "count": 3, "shortCode": "DE"}] if servers else [],
+                "maps": [{"id": 2, "name": "Dust", "url": None, "count": 4, "key": "dm1", "image": None}] if servers else [],
             })
+
+        if re.fullmatch(r"servers/\d+/prefetch", route):
+            if rest[1] != "7":
+                return self._json(404, {"ok": False, "code": "NOT_FOUND", "message": "No such server."})
+            return ok({
+                "format": 1, "kind": "tmc.prefetch", "server_id": 7, "app_id": 1,
+                "packs": [{"id": "seed/solo", "version": "1.2.0", "bytes": 4096}, {"id": "seed/maps", "version": "0.3.0", "bytes": 8192}],
+                "avatar_library": "https://x/api/avatar/v1/library?server=7", "mirrors_url": "https://cdn.x/mirrors.json",
+            })
+
+        if route == "avatar/schema":
+            return ok({"schema_id": "backbone.v1", "slots": [{"id": "hair", "parts": [{"id": "short", "free": True}]}]})
+
+        if route == "auth/ticket-keys":
+            return ok({"issuer": "https://x", "keys": [{"kid": "k2", "alg": "RS256", "pem": "-----BEGIN PUBLIC KEY-----\n"}], "revoked": ["k1"], "refreshSec": 300})
 
         if route == "reviews":
             return ok({
@@ -1171,7 +1246,10 @@ class MockServer:
 #   - `auth/refresh` ROTATES: the old refresh token is retired, and presenting a
 #     retired one revokes the family (`token_reuse`), as `RotateAppToken` does.
 
-APP_USER_ROOTS = {"auth", "me", "friends", "party", "presence", "installs", "subscriptions", "stats", "downloads", "avatar", "report", "play"}
+APP_USER_ROOTS = {"auth", "me", "friends", "party", "presence", "installs", "subscriptions", "stats", "downloads", "avatar", "report", "play", "mirrors"}
+
+#: Under an app-user root but `auth: optional` (or none) on the site: public reads.
+APP_PUBLIC_ROUTES = (["avatar", "schema"], ["auth", "ticket-keys"])
 
 PLAY_ROWS: dict[str, list[dict[str, Any]]] = {
     "games": [
@@ -1237,6 +1315,15 @@ class AppUserState:
         self.play_enabled = True
         self.quick: list[dict[str, Any]] = []
         self.reservations: dict[str, dict[str, Any]] = {}
+        #: `/avatar/actions`: what may be equipped, and the equipped ids per kind, in order.
+        self.actions = [
+            {"id": 1, "kind": "EMOTE", "name": "Wave", "description": None, "builtin": True, "loop": False},
+            {"id": 2, "kind": "EMOTE", "name": "Dance", "description": None, "builtin": True, "loop": True},
+            {"id": 3, "kind": "POSE", "name": "Sit", "description": None, "builtin": True, "loop": True},
+        ]
+        self.loadout: dict[str, list[int]] = {"EMOTE": [1], "POSE": [], "GESTURE": []}
+        #: `/mirrors`, the caller's `ContentMirror` rows.
+        self.mirrors: list[dict[str, Any]] = []
 
     def next(self) -> int:
         self.serial += 1
@@ -1410,6 +1497,48 @@ def _app_user(h: "Handler", method: str, route: str, query: dict[str, list[str]]
             return fail(409, "schema_mismatch", "That document is for another avatar schema.")
         app.avatars[me] = {"version": 1, "schema_id": "backbone.v1", **b}
         return ok(app.avatars[me])
+
+    # avatar actions: GET the equippable list with slots, PUT one kind's list.
+    if route == "avatar/actions" and method == "GET":
+        kind = q("kind")
+        if kind not in (None, "EMOTE", "POSE", "GESTURE"):
+            return bad()
+        rows = [a for a in app.actions if kind in (None, a["kind"])]
+        slot = {i: n for ids in app.loadout.values() for n, i in enumerate(ids)}
+        return ok({"max": 8, "actions": [{**a, "equipped": a["id"] in slot, "slot": slot.get(a["id"])} for a in rows]})
+    if route == "avatar/actions" and method == "PUT":
+        ids = b.get("actionIds")
+        if b.get("kind") not in ("EMOTE", "POSE", "GESTURE") or not isinstance(ids, list) or len(ids) > 8:
+            return bad()
+        known = {a["id"]: a["kind"] for a in app.actions}
+        if any(known.get(i) != b["kind"] for i in ids):
+            return fail(404, "not_found", "No such action.")
+        app.loadout[b["kind"]] = list(dict.fromkeys(ids))
+        return ok({"ok": True})
+
+    # mirrors: the caller's own; DELETE takes ?id=.
+    if route == "mirrors" and method == "GET":
+        return ok({"list_url": "https://cdn.x/mirrors.json", "mirrors": [m for m in app.mirrors if m["owner"] == me]})
+    if route == "mirrors" and method == "POST":
+        base = b.get("base_url") or ""
+        if not isinstance(b.get("packs"), list) or not b.get("operator"):
+            return bad()
+        if not base.startswith("https://"):
+            return fail(400, "BAD_URL", "A mirror is served over https.")
+        if any(m["baseUrl"] == base for m in app.mirrors):
+            return fail(409, "TAKEN", "That address is already registered.")
+        row = {"id": app.next(), "baseUrl": base, "operator": b["operator"], "regions": b.get("regions") or [],
+               "packs": b["packs"], "avatars": bool(b.get("avatars")), "status": "PENDING", "failures": 0,
+               "lastProbeAt": None, "lastError": None, "latencyMs": None, "createdAt": "2026-10-24T00:00:00Z", "owner": me}
+        app.mirrors.append(row)
+        return ok({"id": row["id"], "status": "PENDING"}, 201)
+    if route == "mirrors" and method == "DELETE":
+        mid = q("id")
+        hit = [m for m in app.mirrors if str(m["id"]) == mid and m["owner"] == me]
+        if not hit:
+            return fail(404, "NOT_FOUND", "No such mirror of yours.")
+        app.mirrors.remove(hit[0])
+        return ok({"removed": hit[0]["id"]})
 
     # report: one open report per (member, item); a second answers success.
     if route == "report" and method == "POST":
