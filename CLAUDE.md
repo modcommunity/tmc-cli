@@ -11,7 +11,7 @@ src/tmc_cli/
   cli.py               argparse wiring + dispatch; the command surface lives here
   context.py           what commands are handed (lazy client, output helpers, public_transport)
   config.py            profiles in ~/.config/tmc/config.json, env overrides, site_url()
-  auth.py              Bearer / Jwt / AppToken / Anonymous credentials (one header per attempt)
+  auth.py              Bearer / Jwt / AppToken / Creator / Integration / Anonymous credentials (one header per attempt)
   app_api.py           app-user session: stored pair, refresh-once, app API query dialect
   ed25519.py           PKCS#8 PEM parse + signing; cryptography or RFC 8032 fallback
   http.py              transport: urllib, retries, multipart streaming, error unwrapping
@@ -22,7 +22,7 @@ src/tmc_cli/
   output.py            table/json/csv/yaml rendering
   commands/            one module per surface (catalog_cmd: app API public reads;
                        defcon_cmd: status data; appuser_cmd: device login and the
-                       per-member routes, game-client-only ones excluded; release_cmd, relation_cmd, contract_cmd, …)
+                       per-member routes, game-client-only ones excluded; integration_cmd: /api/integration/v1 with a tmci_ key; release_cmd, relation_cmd, contract_cmd, …)
 scripts/schema-drift.py  registry drift against a website-city checkout
 tests/
   mock_server.py       in-memory stand-in for /api/content, the app API (public and
@@ -48,6 +48,7 @@ Neither drift check (`tmc contract drift`, `scripts/schema-drift.py`) belongs in
 - `schema.py` is a convenience, not authority; check it with `tmc contract drift` before trusting it. Strictness differences are deliberately non-failing. ([contract](docs/contract.md#tmc-contract-the-first-thing-to-reach-for))
 - Commands stay the mirror's, because `--help` must work offline; a command the site grew needs a release. ([contract](docs/contract.md#tmc-contract-the-first-thing-to-reach-for))
 - `catalog` and `defcon` flags are pinned by website-city's console `spec.test.ts`; change both trees together. ([contract](docs/contract.md#the-web-console))
+- The integration key (`tmci_`) comes only from `TMC_INTEGRATION_KEY`/`--key-file`, goes only to `/api/integration/v1`, and is never stored. ([surfaces](docs/surfaces.md#integration-keys-tmc-integration))
 - Keyless surfaces go through `Context.public_transport()`; the profile's key is never sent to them (the app API refuses a publishing credential). ([surfaces](docs/surfaces.md))
 - App-user refresh rotates: save the new pair immediately; refresh at most once per call; never present a session to another base URL. ([surfaces](docs/surfaces.md#the-app-api-as-the-signed-in-member))
 - Paths keep `/api` even on the API origin. ([behaviours](docs/behaviours.md))

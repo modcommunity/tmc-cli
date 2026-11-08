@@ -129,6 +129,27 @@ class CreatorTokenCredential(Credential):
         return f"creator {redact(self.token)}"
 
 
+@dataclass
+class IntegrationKeyCredential(Credential):
+    """An integration key (`tmci_…`), the `/api/integration/v1` credential.
+
+    A different namespace from the content key on purpose (the server refuses
+    one on the other's surface), scoped per server or app. Never stored in a
+    profile and never sent anywhere but the integration routes: it comes from
+    `TMC_INTEGRATION_KEY` or a file per call (`integration_cmd.py`).
+    """
+
+    token: str
+
+    kind = "integration"
+
+    def authorization(self) -> str | None:
+        return f"Bearer {self.token}"
+
+    def describe(self) -> str:
+        return f"integration {redact(self.token)}"
+
+
 class JwtCredential(Credential):
     """A JWT-mode key: an Ed25519 private key that signs a fresh assertion."""
 

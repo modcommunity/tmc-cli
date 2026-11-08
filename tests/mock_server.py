@@ -186,6 +186,8 @@ class State:
         self.app = AppUserState()
         #: `/api/avatar/v1/publish` uploads accepted.
         self.published: list[dict[str, Any]] = []
+        #: `/api/integration/v1` calls accepted: (method, route, query, body).
+        self.integration: list[tuple[str, str, dict[str, str], Any]] = []
         #: `defcon.public.outages`, newest first.
         self.defcon_outages: list[dict[str, Any]] = [
             {"id": 40 - n, "startedAt": f"2026-10-2{3 - n}T10:00:00.000Z", "endedAt": None if n == 0 else f"2026-10-2{3 - n}T10:05:00.000Z",
@@ -369,6 +371,35 @@ class Handler(BaseHTTPRequestHandler):
 
         # `/api/avatar/v1/*`: not the app API. Plain JSON, no envelope; the
         # library is public, publish takes a creator token and the GLB as the body.
+        # `/api/integration/v1/*`: an integration key (`tmci_…`) only. Like the
+        # server, every refusal of the credential is the same vague 401.
+        if parts[:3] == ["api", "integration", "v1"]:
+            body = self._read_json()
+            route = "/".join(parts[3:])
+            if self.headers.get("Authorization") != "Bearer tmci_ops":
+                return self._json(401, {"error": "Unauthorized."})
+            reads = {"me", "store/entitlements", "achievements/player", "stats/player", "stats/top", "leaderboard/board"}
+            writes = {"player/introspect", "achievements/define", "stats/define", "leaderboard/define"}
+            if not ((method == "GET" and route in reads) or (method == "POST" and route in writes)):
+                return self._json(405 if route in reads | writes else 404, {"error": "Not found."})
+            if method == "POST" and not (isinstance(body, dict) and isinstance(body.get("ts"), int) and body.get("nonce")):
+                return self._json(400, {"error": "ts and nonce are required here."})
+            STATE.integration.append((method, route, query, body))
+            if route == "me":
+                return self._json(200, {"ok": True, "integrationId": "12", "scopes": ["USER_LOOKUP", "STATS_WRITE"], "target": {"kind": "server", "id": 4821}, "rateLimit": 600, "serverTime": 1753822800})
+            if route == "player/introspect":
+                if body.get("access_token") != "tmc_jt_good":
+                    return self._json(401, {"error": "token_expired"})
+                return self._json(200, {"ok": True, "user": {"key": "srv-abc", "name": "Ashley", "username": "ashley"}})
+            if route.endswith("/define"):
+                noun = {"achievements/define": "achievements", "stats/define": "stats", "leaderboard/define": "boards"}[route]
+                items = body.get(noun) or []
+                refused = [{"key": i.get("key") or i.get("id"), "reason": "kind_changed"} for i in items if i.get("kind") == "BAD"]
+                return self._json(200, {"ok": True, "created": len(items) - len(refused), "updated": 0, "refused": refused})
+            if "player" in reads and route != "me" and route not in ("stats/top", "leaderboard/board") and not query.get("player"):
+                return self._json(400, {"error": "player is required."})
+            return self._json(200, {"ok": True, "route": route, "query": query})
+
         if parts == ["api", "avatar", "v1", "library"] and method == "GET":
             self._read_body()
             server, app = query.get("server"), query.get("app")

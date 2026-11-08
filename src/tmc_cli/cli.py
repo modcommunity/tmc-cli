@@ -31,6 +31,7 @@ from .commands import (
     creator_cmd,
     defcon_cmd,
     file_cmd,
+    integration_cmd,
     misc_cmd,
     relation_cmd,
     release_cmd,
@@ -366,6 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_defcon(sub)
     _build_app_user(sub)
     _build_creator(sub)
+    _build_integration(sub)
 
     return parser
 
@@ -1207,6 +1209,65 @@ def _build_creator(sub: Any) -> None:
     act.add_argument("--loop", action="store_true", help="the clip loops")
 
 
+def _build_integration(sub: Any) -> None:
+    integ = sub.add_parser(
+        "integration",
+        help="the integration API as a server operator (integration key)",
+        description=(
+            "/api/integration/v1 with an integration key (tmci_…) from "
+            "TMC_INTEGRATION_KEY or --key-file; never the content key or the app session. "
+            "The key's scopes and its one server or app decide what each call may do."
+        ),
+    )
+    ops = integ.add_subparsers(dest="integration_op", metavar="<op>", required=True)
+    c = integration_cmd
+
+    def leaf(parent: Any, name: str, help_: str, handler: Callable[[Context], int]) -> argparse.ArgumentParser:
+        p = _leaf(parent, name, help_, handler)
+        p.add_argument("--key-file", help="file holding the integration key (else TMC_INTEGRATION_KEY)")
+        return p
+
+    def group(name: str, help_: str, dest: str) -> Any:
+        g = ops.add_parser(name, help=help_, description=help_)
+        return g.add_subparsers(dest=dest, metavar="<op>", required=True)
+
+    def table(p: argparse.ArgumentParser, noun: str) -> None:
+        p.add_argument("--file", required=True, help=f"JSON array of {noun} (or {{\"{noun}\": [...]}}); - for stdin")
+
+    def player(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--player", required=True, help="the credential's scoped player key, never a site user id")
+
+    leaf(ops, "me", "check the key: scopes, target, rate limit, server clock (needs no scope)", c.me)
+
+    intro = leaf(ops, "introspect", "turn a player's join token into their scoped key (USER_LOOKUP; spends the token)", c.introspect)
+    intro.add_argument("access_token", help="the join token (tmc_jt_…); - reads it from stdin")
+
+    ent = leaf(ops, "entitlements", "what one player owns in this game (STORE_READ)", c.entitlements)
+    player(ent)
+
+    ach = group("achievements", "the game's own achievements", "integration_achievements_op")
+    table(leaf(ach, "define", "declare the whole catalogue, idempotent (ACHIEVEMENTS_WRITE)", c.achievements_define), "achievements")
+    player(leaf(ach, "player", "the achievements one player holds (ACHIEVEMENTS_READ)", c.achievements_player))
+
+    stats = group("stats", "the statistics the game keeps per player", "integration_stats_op")
+    table(leaf(stats, "define", "declare the stat table, idempotent (STATS_WRITE)", c.stats_define), "stats")
+    player(leaf(stats, "player", "every value one player holds (STATS_READ)", c.stats_player))
+    top = leaf(stats, "top", "one stat as a ranking (STATS_READ)", c.stats_top)
+    top.add_argument("--stat", required=True)
+    top.add_argument("--offset", type=int)
+    top.add_argument("--limit", type=int)
+    top.add_argument("--player", help="also return this player's own rank")
+
+    lb = group("leaderboard", "the game's leaderboards", "integration_leaderboard_op")
+    table(leaf(lb, "define", "declare the boards, idempotent (LEADERBOARD_WRITE)", c.leaderboard_define), "boards")
+    board = leaf(lb, "board", "a page of one board (LEADERBOARD_READ)", c.leaderboard_board)
+    board.add_argument("--board", required=True, help="board key")
+    board.add_argument("--scope", help="canonical k=v;k=v scope string")
+    board.add_argument("--offset", type=int)
+    board.add_argument("--limit", type=int)
+    board.add_argument("--player", help="also return this player's own rank")
+
+
 def local_command_paths() -> set[tuple[str, ...]]:
     """Every command this build understands, as ('mod', 'list') tuples.
 
@@ -1244,7 +1305,7 @@ def top_level_commands() -> list[str]:
 
     return sorted(
         list(TOP_LEVEL_TYPES)
-        + ["auth", "contract", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "open", "completion", "catalog", "defcon", "creator"]
+        + ["auth", "contract", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "open", "completion", "catalog", "defcon", "creator", "integration"]
         + list(APP_USER_GROUPS)
     )
 
