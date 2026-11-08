@@ -58,6 +58,7 @@ the profile):
 | `TMC_JWT_LIFETIME` | assertion lifetime in seconds | 60 |
 | `TMC_APP_TOKEN` | app-user token for `friends`, `party`, … (used as-is, no refresh) | |
 | `TMC_CREATOR_TOKEN` | creator token for `creator publish` (never stored) | |
+| `TMC_INTEGRATION_KEY` | integration key (`tmci_…`) for `integration` (never stored) | |
 | `TMC_CONFIG_DIR` | where `config.json` lives | `~/.config/tmc` |
 | `TMC_COLOR` | `always` forces colour when piped | auto (TTY) |
 
@@ -412,6 +413,29 @@ API's; `tmc reviews` writes as you. Routes only a game client calls
 TMC_CREATOR_TOKEN=tmcc_… tmc creator publish cap.glb --kind wearable --name "Red cap" --slot hat --licence CC0-1.0
 tmc creator publish wave.glb --kind action --action-kind emote --name Wave --loop --token-file ~/.tmcc
 ```
+
+## Server operators: the integration API
+
+`tmc integration` speaks to `/api/integration/v1` with an **integration key**
+(`tmci_…`, Account, Integrations), read from `TMC_INTEGRATION_KEY` or
+`--key-file` and never stored or sent to any other route. What the key may do
+is its scopes and its one server or app.
+
+```bash
+export TMC_INTEGRATION_KEY=tmci_…
+tmc integration me                                  # scopes, target, server clock
+tmc integration stats define --file stats.json      # array of {key,name,kind,…}
+tmc integration achievements define --file ach.json
+tmc integration leaderboard define --file boards.json
+tmc integration stats top --stat kills --limit 10
+tmc integration leaderboard board --board fastest --scope 'map=surf_x;track=0'
+tmc integration achievements player --player <scoped-key>
+tmc integration entitlements --player <scoped-key>
+tmc integration introspect <join-token>             # spends the token
+```
+
+Submitting scores, stats and unlocks is the game server's job and is not a
+command; see `docs/surfaces.md`.
 
 ## Network status (Defcon)
 

@@ -250,6 +250,97 @@ class TestCreatorPublish(CliTestCase):
             self.assertIn("valid creator token", self.run_cli_err("creator", "publish", self.glb(), "--kind", "avatar", "--name", "R", expect=3))
 
 
+class TestIntegration(CliTestCase):
+    KEY = {"TMC_INTEGRATION_KEY": "tmci_ops"}
+
+    def table(self, name: str, rows: list) -> str:
+        path = os.path.join(self.config_dir, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(rows, handle)
+        return path
+
+    def test_me_sends_the_integration_key_not_the_content_key(self) -> None:
+        with mock.patch.dict(os.environ, self.KEY):
+            out = json.loads(self.run_cli("integration", "me", "-o", "json"))
+
+        self.assertEqual((out["scopes"], out["target"]["id"]), (["USER_LOOKUP", "STATS_WRITE"], 4821))
+        # `run_cli` carries a content key on the line; it is never what goes out.
+        self.assertEqual(STATE.auth_headers[-1], "Bearer tmci_ops")
+        self.assertEqual(STATE.requests[-1], ("GET", "/api/integration/v1/me"))
+
+    def test_key_file_and_refusals(self) -> None:
+        keyfile = os.path.join(self.config_dir, "int.key")
+        with open(keyfile, "w", encoding="utf-8") as handle:
+            handle.write("tmci_ops\n")
+        self.run_cli("integration", "me", "--key-file", keyfile)
+
+        with mock.patch.dict(os.environ, {"TMC_INTEGRATION_KEY": ""}):
+            self.assertIn("integration key is required", self.run_cli_err("integration", "me", expect=2))
+
+        with mock.patch.dict(os.environ, {"TMC_INTEGRATION_KEY": "tmc_notmine"}):
+            before = len(STATE.requests)
+            self.assertIn("tmci_", self.run_cli_err("integration", "me", expect=2))
+            self.assertEqual(len(STATE.requests), before)
+
+        with mock.patch.dict(os.environ, {"TMC_INTEGRATION_KEY": "tmci_wrong"}):
+            self.assertIn("Unauthorized", self.run_cli_err("integration", "me", expect=3))
+
+    def test_define_stamps_the_body_and_surfaces_refusals(self) -> None:
+        rows = self.table("stats.json", [{"key": "kills", "name": "Kills", "kind": "COUNTER"}, {"key": "x", "name": "X", "kind": "BAD"}])
+        with mock.patch.dict(os.environ, self.KEY):
+            err = self.run_cli_err("integration", "stats", "define", "--file", rows, "-o", "json", expect=0)
+
+        method, route, _, body = STATE.integration[-1]
+        self.assertEqual((method, route), ("POST", "stats/define"))
+        self.assertEqual([s["key"] for s in body["stats"]], ["kills", "x"])
+        self.assertTrue(isinstance(body["ts"], int) and body["nonce"])
+        self.assertIn("1 refused", err)
+
+        # Wrapped form, achievements and boards go to their own routes.
+        wrapped = self.table("a.json", {"achievements": [{"id": "a.b", "name": "B", "rules": []}]})
+        boards = self.table("b.json", [{"key": "fastest", "scope": {"map": "m"}, "name": "F", "kind": "TIME"}])
+        with mock.patch.dict(os.environ, self.KEY):
+            self.run_cli("integration", "achievements", "define", "--file", wrapped)
+            self.run_cli("integration", "leaderboard", "define", "--file", boards)
+        self.assertEqual([r for _, r, _, _ in STATE.integration[-2:]], ["achievements/define", "leaderboard/define"])
+
+    def test_define_refusals_are_local(self) -> None:
+        with mock.patch.dict(os.environ, self.KEY):
+            before = len(STATE.requests)
+            too_many = self.table("many.json", [{"key": str(n)} for n in range(26)])
+            self.assertIn("at most 25", self.run_cli_err("integration", "stats", "define", "--file", too_many, expect=2))
+            self.assertIn("non-empty", self.run_cli_err("integration", "leaderboard", "define", "--file", self.table("e.json", []), expect=2))
+            self.assertIn("Could not read", self.run_cli_err("integration", "stats", "define", "--file", "/nonexistent/x.json", expect=2))
+            self.assertEqual(len(STATE.requests), before)
+
+    def test_reads_send_their_query(self) -> None:
+        with mock.patch.dict(os.environ, self.KEY):
+            self.run_cli("integration", "entitlements", "--player", "srv-abc")
+            self.run_cli("integration", "achievements", "player", "--player", "srv-abc")
+            self.run_cli("integration", "stats", "player", "--player", "srv-abc")
+            self.run_cli("integration", "stats", "top", "--stat", "kills", "--limit", "5", "--player", "srv-abc")
+            self.run_cli("integration", "leaderboard", "board", "--board", "fastest", "--scope", "map=m;track=0", "--offset", "10")
+
+        seen = {r: q for _, r, q, _ in STATE.integration}
+        self.assertEqual(seen["store/entitlements"], {"player": "srv-abc"})
+        self.assertEqual(seen["stats/top"], {"stat": "kills", "limit": "5", "player": "srv-abc"})
+        self.assertEqual(seen["leaderboard/board"], {"board": "fastest", "scope": "map=m;track=0", "offset": "10"})
+
+    def test_introspect_takes_the_token_positionally_or_on_stdin(self) -> None:
+        with mock.patch.dict(os.environ, self.KEY):
+            out = json.loads(self.run_cli("integration", "introspect", "tmc_jt_good", "-o", "json"))
+            self.assertEqual(out["user"]["key"], "srv-abc")
+            with mock.patch("sys.stdin", io.StringIO("tmc_jt_good\n")):
+                self.run_cli("integration", "introspect", "-")
+            self.assertIn("token_expired", self.run_cli_err("integration", "introspect", "tmc_jt_spent", expect=3))
+
+    def test_dry_run_sends_nothing(self) -> None:
+        with mock.patch.dict(os.environ, self.KEY):
+            before = len(STATE.requests)
+            self.run_cli("integration", "stats", "define", "--file", self.table("s.json", [{"key": "k", "name": "K", "kind": "GAUGE"}]), "--dry-run")
+            self.assertEqual(len(STATE.requests), before)
+
+
 class TestDefcon(CliTestCase):
     def test_status_url_moves_the_rest_reads(self) -> None:
         # website-status answers /api/status/defcon on its own host; the API
