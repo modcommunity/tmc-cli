@@ -56,7 +56,7 @@ the profile):
 | `TMC_TOKEN` | bearer key | |
 | `TMC_KEY_ID`, `TMC_PRIVATE_KEY`, `TMC_PRIVATE_KEY_FILE` | JWT key id and PEM (inline or path) | |
 | `TMC_JWT_LIFETIME` | assertion lifetime in seconds | 60 |
-| `TMC_APP_TOKEN` | app-user token for `friends`, `party`, … (used as-is, no refresh) | |
+| `TMC_APP_TOKEN` | app-user token for `friends`, `party`, … (used as-is, no refresh); also the fallback credential for mod/creator commands when no key or profile credential is given | |
 | `TMC_CREATOR_TOKEN` | creator token for `creator publish` (never stored) | |
 | `TMC_INTEGRATION_KEY` | integration key (`tmci_…`) for `integration` (never stored) | |
 | `TMC_CONFIG_DIR` | where `config.json` lives | `~/.config/tmc` |

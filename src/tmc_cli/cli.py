@@ -1373,7 +1373,27 @@ def rewrite_trailing_help(parser: argparse.ArgumentParser, argv: list[str]) -> l
     return argv[:-1] + ["--help"]
 
 
+def _safe_streams() -> None:
+    """UTF-8 with `errors=replace` on stdout/stderr.
+
+    A pipe or a non-UTF-8 locale (the desktop app's Console) otherwise either
+    raises on `→`/`…` or shows them as mojibake. Streams without `reconfigure`
+    (StringIO under test) are left alone.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _safe_streams()
+
     parser = build_parser()
 
     raw = list(argv) if argv is not None else sys.argv[1:]
