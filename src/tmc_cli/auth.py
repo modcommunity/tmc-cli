@@ -110,6 +110,22 @@ class AppTokenCredential(Credential):
 
 
 @dataclass
+class AppSessionCredential(AppTokenCredential):
+    """The signed-in GameSpice app user, standing in for a content-API key.
+
+    Same header as `AppTokenCredential`; a separate kind so `whoami` and the
+    debug log say the request went out as the app session rather than as a key
+    the member made. Used by `_resolve_credential` only when nothing explicit
+    (flag, TMC_TOKEN, key, profile credential) was given.
+    """
+
+    kind = "app-session"
+
+    def describe(self) -> str:
+        return f"app session {redact(self.token)}"
+
+
+@dataclass
 class CreatorTokenCredential(Credential):
     """A creator token (`tmcc_…`), the avatar publish endpoint's own credential.
 

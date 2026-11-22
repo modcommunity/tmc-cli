@@ -21,7 +21,13 @@ import stat
 from dataclasses import dataclass, field
 from typing import Any
 
-from .auth import AnonymousCredential, BearerCredential, Credential, JwtCredential
+from .auth import (
+    AnonymousCredential,
+    AppSessionCredential,
+    BearerCredential,
+    Credential,
+    JwtCredential,
+)
 from .ed25519 import KeyError_, SigningKey
 from .errors import ConfigError
 
@@ -297,7 +303,7 @@ def resolve(args: Any) -> Settings:
         or DEFAULT_BASE_URL
     )
 
-    credential = _resolve_credential(args, profile, profile_name)
+    credential = _resolve_credential(args, profile, profile_name, base_url)
 
     options = dict(profile.options) if profile else {}
 
@@ -383,7 +389,10 @@ def resolve_unkeyed(args: Any) -> Settings:
 
 
 def _resolve_credential(
-    args: Any, profile: Profile | None, profile_name: str
+    args: Any,
+    profile: Profile | None,
+    profile_name: str,
+    base_url: str = DEFAULT_BASE_URL,
 ) -> Credential:
     # `--anon` is a positive choice, so it beats everything — including a
     # perfectly good stored key. Sending the key would be a DIFFERENT request:
@@ -433,13 +442,33 @@ def _resolve_credential(
     if token:
         return BearerCredential(token)
 
+    if profile and (profile.token or profile.key_id):
+        return profile.credential()
+
+    # Nothing explicit: fall back to the GameSpice app sign-in, so the Console
+    # in the desktop app (TMC_APP_TOKEN) or a prior `tmc auth app-login` works
+    # without a second credential.
+    app_token = os.environ.get("TMC_APP_TOKEN")
+
+    if app_token:
+        return AppSessionCredential(app_token)
+
+    if profile and profile.app and profile.app.get("access_token"):
+        bound = str(profile.app.get("base_url") or "").rstrip("/")
+
+        # Never presented to another host (same rule as AppSession).
+        if bound == base_url.rstrip("/"):
+            return AppSessionCredential(str(profile.app["access_token"]))
+
     if profile:
         return profile.credential()
 
     raise ConfigError(
         f"No credentials found (profile '{profile_name}' does not exist).",
         hint=(
-            "Run 'tmc auth login --token tmc_…' for a bearer key, or "
+            "Sign in to the GameSpice app (its Console passes the session on as TMC_APP_TOKEN) "
+            "or run 'tmc auth app-login'; or use "
+            "'tmc auth login --token tmc_…' for a bearer key, or "
             "'tmc auth login --jwt --key-id tmcak_… --private-key key.pem' for a JWT key. "
             "TMC_TOKEN also works."
         ),
