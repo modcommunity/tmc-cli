@@ -470,6 +470,19 @@ The site's own switches are honoured: when the status page hides nodes or
 incidents, so does this. Incident history (`--all`) goes back 90 days and needs
 a site with `/api/status/defcon/incidents`.
 
+## External mods
+
+```
+tmc mods add https://modrinth.com/mod/sodium          # direct, no confirmation
+tmc mods add <link> --dry-run                          # the plan, nothing downloaded
+tmc mods add ./pack.zip --dest ~/mods --max-mb 0       # 0 = no limit (default)
+tmc mods list | remove <id> | link-status
+```
+
+Keyed providers (CurseForge, mod.io, Nexus) exit 9 with "not enabled" unless the
+site reports them on; Steam and manual-only links exit 10. Details and the
+design choice: [docs/external-mods.md](docs/external-mods.md).
+
 ## Shell completion
 
 ```bash

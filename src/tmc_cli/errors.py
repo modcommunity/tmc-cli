@@ -18,6 +18,8 @@ EXIT_VALIDATION = 5  # 400 — the payload was refused
 EXIT_RATE_LIMIT = 6  # 429
 EXIT_SERVER = 7  # 5xx
 EXIT_NETWORK = 8
+EXIT_UNAVAILABLE = 9  # a keyed provider (CurseForge, Nexus, mod.io) is not enabled here
+EXIT_OPEN_PAGE = 10  # nothing to install by itself: the link is a page to open (Steam, manual-only)
 EXIT_ERROR = 1
 
 
@@ -160,3 +162,15 @@ def format_issues(issues: Any) -> list[str]:
             lines.append(f"{field}: {joined}")
 
     return lines
+
+
+class UnavailableError(CliError):
+    """The provider needs a key nobody here holds. Not a failure of the link."""
+
+    exit_code = EXIT_UNAVAILABLE
+
+
+class OpenPageError(CliError):
+    """Nothing to download: the author wants the page opened."""
+
+    exit_code = EXIT_OPEN_PAGE

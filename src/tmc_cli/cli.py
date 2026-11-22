@@ -33,6 +33,7 @@ from .commands import (
     file_cmd,
     integration_cmd,
     misc_cmd,
+    mods_cmd,
     relation_cmd,
     release_cmd,
 )
@@ -368,6 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_app_user(sub)
     _build_creator(sub)
     _build_integration(sub)
+    _build_mods(sub)
 
     return parser
 
@@ -445,6 +447,32 @@ def _build_auth(sub: Any) -> None:
     app_login.add_argument("--browser", action="store_true", help="open the approval page in a browser")
     _leaf(ops, "app-logout", "revoke and forget the app-user session", appuser_cmd.logout)
     _leaf(ops, "app-whoami", "who the app-user session is (GET /me)", appuser_cmd.me)
+
+
+def _build_mods(sub: Any) -> None:
+    group = sub.add_parser("mods", help="install mods from outside the site (Modrinth, Thunderstore, GitHub, direct links)")
+    ops = group.add_subparsers(dest="mods_command", metavar="<op>", required=True)
+
+    add = _leaf(
+        ops,
+        "add",
+        "install from a link or a local file; direct, no confirmation (--dry-run shows the plan)",
+        mods_cmd.add,
+    )
+    add.add_argument("source", help="a link (modrinth/thunderstore/github/direct URL, nxm://, curseforge://, ...) or a file path")
+    add.add_argument("--dest", metavar="DIR", help="mods store (default: $TMC_MODS_DIR or the user data dir)")
+    add.add_argument("--file", metavar="NAME", help="which file of the version, when it has several")
+    add.add_argument("--max-mb", type=int, default=None, metavar="N", help="refuse downloads over N MB; 0 (the default) means no limit")
+    add.add_argument("--open", action="store_true", help="when the link is only a page, open it in a browser")
+
+    remove = _leaf(ops, "remove", "uninstall a mod this command installed", mods_cmd.remove, aliases=["rm"])
+    remove.add_argument("mod", help="its id (provider:project), project id or title")
+    remove.add_argument("--dest", metavar="DIR", help="mods store")
+
+    listing = _leaf(ops, "list", "mods installed by 'tmc mods add'", mods_cmd.list_mods, aliases=["ls"])
+    listing.add_argument("--dest", metavar="DIR", help="mods store")
+
+    _leaf(ops, "link-status", "who handles nxm://, curseforge://, modrinth://, ror2mm:// on this machine", mods_cmd.link_status)
 
 
 def _build_contract(sub: Any) -> None:
@@ -1305,7 +1333,7 @@ def top_level_commands() -> list[str]:
 
     return sorted(
         list(TOP_LEVEL_TYPES)
-        + ["auth", "contract", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "open", "completion", "catalog", "defcon", "creator", "integration"]
+        + ["auth", "contract", "content", "rel", "tags", "media", "links", "file", "release", "schema", "template", "raw", "open", "completion", "catalog", "defcon", "creator", "integration", "mods"]
         + list(APP_USER_GROUPS)
     )
 

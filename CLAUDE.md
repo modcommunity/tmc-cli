@@ -71,3 +71,5 @@ Neither drift check (`tmc contract drift`, `scripts/schema-drift.py`) belongs in
 | [docs/contract.md](docs/contract.md) | Touching `schema.py`, `contract.py`, the drift script, or anything the web console shares |
 | [docs/surfaces.md](docs/surfaces.md) | Working on `catalog`, `defcon`, the app-user commands (and which app routes are deliberately not commands), or the integration API gap |
 | [docs/behaviours.md](docs/behaviours.md) | Changing transport, auth, retries, batching, `--anon`, release publishing, or the mock |
+
+`external/` (parse, resolve, install, links) and `commands/mods_cmd.py` implement `tmc mods`; see docs/external-mods.md.

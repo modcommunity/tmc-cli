@@ -425,6 +425,10 @@ CLI_ONLY: set[tuple[str, ...]] = {
     ("contract", "show"),
     ("contract", "drift"),
     ("contract", "clear"),
+    ("mods", "add"),
+    ("mods", "remove"),
+    ("mods", "list"),
+    ("mods", "link-status"),
 }
 
 
