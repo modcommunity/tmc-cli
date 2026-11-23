@@ -972,7 +972,7 @@ def _build_defcon(sub: Any) -> None:
 
 
 #: The groups that run as the app-user session (`tmc auth app-login`).
-APP_USER_GROUPS = ("friends", "party", "presence", "installs", "subscriptions", "reviews", "stats", "account", "mirrors", "play", "report")
+APP_USER_GROUPS = ("friends", "party", "presence", "installs", "subscriptions", "reviews", "stats", "account", "chat", "mirrors", "play", "report")
 
 
 def _build_app_user(sub: Any) -> None:
@@ -997,6 +997,7 @@ def _build_app_user(sub: Any) -> None:
 
     # -- party
     ops = group("party", "parties")
+    _leaf(ops, "stats", "your own party numbers", m.party_stats)
     _leaf(ops, "mine", "the party you are in", m.party_mine).add_argument("--members", action="store_true", help="list the roster")
     show = _leaf(ops, "show", "one party", m.party_show)
     show.add_argument("id")
@@ -1143,6 +1144,11 @@ def _build_app_user(sub: Any) -> None:
     top.add_argument("--limit", type=int)
     _leaf(ops, "me", "your values in one game", m.stats_me).add_argument("app", type=int, help="game id")
     _leaf(ops, "defs", "the stats a game declares", m.stats_defs).add_argument("app", type=int, help="game id")
+    _leaf(ops, "overview", "your play across every game", m.stats_overview)
+
+    # -- chat (reads; the site's own chat is the writer)
+    ops = group("chat", "your conversations")
+    _leaf(ops, "unread", "unread messages across your threads", m.chat_unread)
 
     # -- account (the parts of /me, downloads and avatar a member manages by hand)
     ops = group("account", "your synced settings, downloads in progress, avatar")
@@ -1153,6 +1159,13 @@ def _build_app_user(sub: Any) -> None:
         "--items", action="store_true", help="one row per item instead of per device"
     )
     _leaf(ops, "avatar", "your avatar document", m.account_avatar)
+    note_ = _leaf(ops, "notifications", "your notifications, newest first", m.account_notifications)
+    note_.add_argument("--since", help="ISO date or notification id: unread rows newer than it")
+    note_.add_argument("--limit", type=int, help="1-50 (site default 20)")
+    _leaf(ops, "points", "your points in every pool", m.account_points)
+    buys = _leaf(ops, "purchases", "your store purchases, newest first", m.account_purchases)
+    buys.add_argument("--limit", type=int, help="1-100 (site default 50)")
+    buys.add_argument("--cursor", type=int, help="the `next` of the previous page")
     _leaf(ops, "avatar-set", "publish an avatar document", m.account_avatar_set).add_argument(
         "file", help="JSON file (as `tmc account avatar -o json` prints), or - for stdin"
     )

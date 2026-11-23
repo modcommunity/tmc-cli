@@ -1250,3 +1250,73 @@ def stats_defs(ctx: Context) -> int:
     ctx.emit(rows, columns=("key", "name", "kind", "unit", "players", "description"))
 
     return 0
+
+
+# ---- the member's own read-only overviews ------------------------------------
+
+
+def account_notifications(ctx: Context) -> int:
+    """The desktop app's poll (`GET /notifications`): newest first, `--since` keeps unread rows only."""
+    args = ctx.args
+    data = _session(ctx).request("GET", "/notifications", params={"since": args.since, "limit": args.limit}) or {}
+
+    if _raw(ctx):
+        ctx.emit(data)
+        return 0
+
+    ctx.emit(data.get("items") or [], columns=("id", "type", "read", "createdAt", "actorName", "title"))
+    ctx.note(f"{data.get('unread', 0)} unread")
+
+    return 0
+
+
+def account_points(ctx: Context) -> int:
+    """Your points in every pool (`GET /me/points`): `site`, one row per game, and `total`."""
+    data = _session(ctx).request("GET", "/me/points") or {}
+
+    if _raw(ctx):
+        ctx.emit(data)
+        return 0
+
+    ctx.emit(data.get("apps") or [])
+    ctx.note(f"site: {data.get('site')} · total: {data.get('total')}")
+
+    return 0
+
+
+def account_purchases(ctx: Context) -> int:
+    """Your purchases across every store, newest first (`GET /store/purchases`, `next` is the cursor)."""
+    args = ctx.args
+    data = _session(ctx).request("GET", "/store/purchases", params={"limit": args.limit, "cursor": args.cursor}) or {}
+
+    if _raw(ctx):
+        ctx.emit(data)
+        return 0
+
+    ctx.emit(data.get("purchases") or [])
+
+    if data.get("next") is not None:
+        ctx.note(f"more: --cursor {data['next']}")
+
+    return 0
+
+
+def stats_overview(ctx: Context) -> int:
+    """Your play across every game (`GET /me/stats`); one game's values are `stats me`."""
+    ctx.emit(_session(ctx).request("GET", "/me/stats") or {})
+
+    return 0
+
+
+def party_stats(ctx: Context) -> int:
+    """Your own party numbers (`GET /party/stats/me`)."""
+    ctx.emit(_session(ctx).request("GET", "/party/stats/me") or {})
+
+    return 0
+
+
+def chat_unread(ctx: Context) -> int:
+    """Unread messages across your threads (`GET /chat/unread`)."""
+    ctx.emit(_session(ctx).request("GET", "/chat/unread"))
+
+    return 0

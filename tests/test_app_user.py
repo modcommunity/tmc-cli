@@ -376,6 +376,21 @@ class TestGroups(AppUserCase):
         self.assertIn("No such stat.", err)
 
 
+class TestOverviews(AppUserCase):
+    """The member's read-only overviews: notifications, points, purchases, stats overview, party stats, chat unread."""
+
+    def test_overviews(self) -> None:
+        self.login()
+        self.assertEqual(len(self.rows("account", "notifications")), 3)
+        self.assertEqual(len(self.rows("account", "notifications", "--since", "2026-01-01", "--limit", "5")), 2)
+        self.assertEqual(self.j("account", "points")["total"], 12)
+        self.assertEqual(self.j("account", "purchases", "--limit", "2")["next"], 2)
+        self.assertEqual([r["id"] for r in self.j("account", "purchases", "--cursor", "2")["purchases"]], [1])
+        self.assertEqual(self.j("stats", "overview")["totals"], {"days": 4})
+        self.assertEqual(self.j("party", "stats")["hosted"], 3)
+        self.assertEqual(self.j("chat", "unread")["count"], 2)
+
+
 class TestPlay(AppUserCase):
     """The play center: page, playable, quick-match."""
 

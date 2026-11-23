@@ -1277,7 +1277,7 @@ class MockServer:
 #   - `auth/refresh` ROTATES: the old refresh token is retired, and presenting a
 #     retired one revokes the family (`token_reuse`), as `RotateAppToken` does.
 
-APP_USER_ROOTS = {"auth", "me", "friends", "party", "presence", "installs", "subscriptions", "stats", "downloads", "avatar", "report", "play", "mirrors"}
+APP_USER_ROOTS = {"auth", "me", "friends", "party", "presence", "installs", "subscriptions", "stats", "downloads", "avatar", "report", "play", "mirrors", "notifications", "store", "chat"}
 
 #: Under an app-user root but `auth: optional` (or none) on the site: public reads.
 APP_PUBLIC_ROUTES = (["avatar", "schema"], ["auth", "ticket-keys"])
@@ -1959,6 +1959,28 @@ def _app_user(h: "Handler", method: str, route: str, query: dict[str, list[str]]
         if any(r["id"] == b["id"] and r["owner"] == me for r in app.reviews.values()):
             return fail(400, "own_review", "You cannot vote on your own review.")
         return ok({"voted": b["positive"]})
+
+    # the member's own read-only overviews
+    if method == "GET" and route == "notifications":
+        items = [{"id": f"n{i}", "type": "FRIEND", "title": f"Note {i}", "body": "", "url": "/", "read": i == 1, "createdAt": "2026-11-01T00:00:00Z",
+                  "actorName": "Ann", "actorAvatarUrl": None} for i in (1, 2, 3)]
+        if q("since"):
+            items = [i for i in items if not i["read"]]
+        return ok({"unread": 2, "items": items[:int(q("limit") or 20)]})
+    if method == "GET" and route == "me/points":
+        return ok({"site": 5, "apps": [{"appId": 1, "name": "Arena", "points": 7}], "total": 12})
+    if method == "GET" and route == "store/purchases":
+        rows = [{"id": n, "item": f"item{n}", "live": True} for n in (3, 2, 1)]
+        after = int(q("cursor") or 99)
+        rows = [r for r in rows if r["id"] < after]
+        page = rows[:int(q("limit") or 50)]
+        return ok({"purchases": page, "next": page[-1]["id"] if len(rows) > len(page) else None})
+    if method == "GET" and route == "me/stats":
+        return ok({"games": [{"appId": 1, "daysPlayed": 4}], "totals": {"days": 4}})
+    if method == "GET" and route == "party/stats/me":
+        return ok({"hosted": 3, "joined": 9})
+    if method == "GET" and route == "chat/unread":
+        return ok({"count": 2})
 
     # stats
     if route in ("stats/top", "stats/me", "stats/defs") and method == "GET":

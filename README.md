@@ -386,6 +386,8 @@ tmc account settings | set notifyParties=false timezone=Europe/Berlin
 tmc account downloads [--items]  # what your app devices are downloading
 tmc account avatar -o json > me.json && tmc account avatar-set me.json
 tmc account actions --kind emote | actions-set emote 2 1 | actions-set pose --clear
+tmc account notifications --limit 10 | points | purchases --limit 20
+tmc stats overview | party stats | chat unread
 tmc mirrors list | add https://m.example/packs --operator Ann --pack 'seed/*' | remove 3
 tmc play page --tab servers --populated   # play center: games, servers, lobbies, invites
 tmc play playable                          # which games have a Play button
